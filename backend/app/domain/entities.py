@@ -7,7 +7,7 @@ through the system.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -38,7 +38,7 @@ class Match(BaseModel):
 
     id: str  # short URL-safe code, e.g. 6 alphanumeric chars
     status: MatchStatus = MatchStatus.LOBBY
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
     # config
     config: MatchConfig
@@ -60,7 +60,7 @@ class Player(BaseModel):
     name: str
     team: Team
     token: str  # opaque player session token
-    joined_at: datetime = Field(default_factory=datetime.utcnow)
+    joined_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
 
 class PullEvent(BaseModel):
@@ -75,7 +75,7 @@ class PullEvent(BaseModel):
     team: Team
     count: int  # number of pulls in this batch (already clamped)
     client_ts: float  # unix timestamp from the client
-    server_ts: datetime = Field(default_factory=datetime.utcnow)
+    server_ts: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     batch_id: str  # UUID from client, used for idempotency/dedup
 
 
