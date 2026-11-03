@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.db-wal
+*.db-shm
+
+# Node
+node_modules/
+dist/
+build/
+
+# Claude Code worktree scratch (git-ignored working dirs)
+.claude/worktrees/

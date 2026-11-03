@@ -1,0 +1,98 @@
+# Review package: 5da51945c509fa5775498778576e43571db504da..05d2c1d
+
+## Commits
+05d2c1d fix(domain): use timezone-aware datetime.now(tz=UTC) for entity timestamps
+
+## Files changed
+ backend/app/domain/entities.py | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+## Diff
+diff --git a/backend/app/domain/entities.py b/backend/app/domain/entities.py
+index fbd6074..0d7ab86 100644
+--- a/backend/app/domain/entities.py
++++ b/backend/app/domain/entities.py
+@@ -1,20 +1,20 @@
+ """Pure domain entities for Corda Brava.
+ 
+ These are framework-free Pydantic v2 models (no FastAPI / SQLite imports).
+ They represent the game state and events as they live in memory and flow
+ through the system.
+ """
+ 
+ from __future__ import annotations
+ 
+-from datetime import datetime
++from datetime import UTC, datetime
+ 
+ from pydantic import BaseModel, Field
+ 
+ from app.domain.enums import BalanceMode, EndReason, MatchResult, MatchStatus, Team
+ 
+ 
+ class TeamConfig(BaseModel):
+     """Visual identity for a team within a match."""
+ 
+     id: str  # e.g. "inter" or "gremio"
+@@ -31,21 +31,21 @@ class MatchConfig(BaseModel):
+     balance_mode: BalanceMode
+     inter: TeamConfig
+     gremio: TeamConfig
+ 
+ 
+ class Match(BaseModel):
+     """Full match entity — combines config, status, and runtime fields."""
+ 
+     id: str  # short URL-safe code, e.g. 6 alphanumeric chars
+     status: MatchStatus = MatchStatus.LOBBY
+-    created_at: datetime = Field(default_factory=datetime.utcnow)
++    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+ 
+     # config
+     config: MatchConfig
+ 
+     # runtime (populated when match starts/finishes)
+     rope_position: float = 0.0  # ∈ [-rope_target, +rope_target]
+     started_at: datetime | None = None
+     ends_at: datetime | None = None
+     result: MatchResult | None = None
+     end_reason: EndReason | None = None
+@@ -53,36 +53,36 @@ class Match(BaseModel):
+ 
+ class Player(BaseModel):
+     """A participant in a match."""
+ 
+     id: str
+     match_id: str
+     device_id: str  # from client localStorage UUID
+     name: str
+     team: Team
+     token: str  # opaque player session token
+-    joined_at: datetime = Field(default_factory=datetime.utcnow)
++    joined_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+ 
+ 
+ class PullEvent(BaseModel):
+     """A single pull-batch event enqueued by a player.
+ 
+     One row per processed batch — sufficient to reconstruct analytics.
+     """
+ 
+     id: str
+     match_id: str
+     player_id: str
+     team: Team
+     count: int  # number of pulls in this batch (already clamped)
+     client_ts: float  # unix timestamp from the client
+-    server_ts: datetime = Field(default_factory=datetime.utcnow)
++    server_ts: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+     batch_id: str  # UUID from client, used for idempotency/dedup
+ 
+ 
+ class TickInput(BaseModel):
+     """Aggregated per-team pull totals for a single consumer tick.
+ 
+     Carries the raw pull counts and active player counts needed so the
+     scoring engine can apply either RAW or NORMALIZED balance mode.
+     """
+ 

@@ -1,0 +1,603 @@
+# Review package: 6f20c240677d6d8cc2a3c32436bc8fd1886aa71a..5da5194
+
+## Commits
+5da5194 feat(backend): skeleton — settings, app factory, domain entities, health
+
+## Files changed
+ backend/.gitignore              |  13 +++++
+ backend/app/__init__.py         |   1 +
+ backend/app/api/__init__.py     |   1 +
+ backend/app/api/health.py       |  14 ++++++
+ backend/app/core/__init__.py    |   1 +
+ backend/app/core/app_factory.py |  65 ++++++++++++++++++++++++
+ backend/app/core/logging.py     |  48 ++++++++++++++++++
+ backend/app/core/settings.py    |  76 ++++++++++++++++++++++++++++
+ backend/app/domain/__init__.py  |   1 +
+ backend/app/domain/entities.py  | 109 ++++++++++++++++++++++++++++++++++++++++
+ backend/app/domain/enums.py     |  51 +++++++++++++++++++
+ backend/pyproject.toml          |  52 +++++++++++++++++++
+ backend/tests/__init__.py       |   1 +
+ backend/tests/test_health.py    |  14 ++++++
+ backend/tests/test_settings.py  |  42 ++++++++++++++++
+ 15 files changed, 489 insertions(+)
+
+## Diff
+diff --git a/backend/.gitignore b/backend/.gitignore
+new file mode 100644
+index 0000000..e3f9c4f
+--- /dev/null
++++ b/backend/.gitignore
+@@ -0,0 +1,13 @@
++.venv/
++__pycache__/
++*.pyc
++*.pyo
++*.db
++*.db-journal
++*.db-wal
++*.db-shm
++.pytest_cache/
++.ruff_cache/
++dist/
++build/
++*.egg-info/
+diff --git a/backend/app/__init__.py b/backend/app/__init__.py
+new file mode 100644
+index 0000000..ff3964f
+--- /dev/null
++++ b/backend/app/__init__.py
+@@ -0,0 +1 @@
++# Corda Brava backend package
+diff --git a/backend/app/api/__init__.py b/backend/app/api/__init__.py
+new file mode 100644
+index 0000000..2043f99
+--- /dev/null
++++ b/backend/app/api/__init__.py
+@@ -0,0 +1 @@
++# api sub-package
+diff --git a/backend/app/api/health.py b/backend/app/api/health.py
+new file mode 100644
+index 0000000..f5ac541
+--- /dev/null
++++ b/backend/app/api/health.py
+@@ -0,0 +1,14 @@
++"""Health-check endpoint."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter
++from fastapi.responses import JSONResponse
++
++router = APIRouter(tags=["health"])
++
++
++@router.get("/health")
++async def health() -> JSONResponse:
++    """Return a simple liveness signal for Docker/load-balancer health checks."""
++    return JSONResponse({"status": "ok"})
+diff --git a/backend/app/core/__init__.py b/backend/app/core/__init__.py
+new file mode 100644
+index 0000000..0676be7
+--- /dev/null
++++ b/backend/app/core/__init__.py
+@@ -0,0 +1 @@
++# core sub-package
+diff --git a/backend/app/core/app_factory.py b/backend/app/core/app_factory.py
+new file mode 100644
+index 0000000..8959211
+--- /dev/null
++++ b/backend/app/core/app_factory.py
+@@ -0,0 +1,65 @@
++"""FastAPI application factory.
++
++Centralises app construction so:
++- Tests receive a fully-configured app without running Uvicorn.
++- The ``main.py`` entry-point stays thin.
++- Later tasks can extend the factory (add routers, lifespan events, middleware)
++  without changing call-sites.
++"""
++
++from __future__ import annotations
++
++import logging
++
++from fastapi import FastAPI
++from fastapi.middleware.cors import CORSMiddleware
++
++from app.api.health import router as health_router
++from app.core.logging import configure_logging
++from app.core.settings import Settings
++
++logger = logging.getLogger(__name__)
++
++
++def create_app(settings: Settings) -> FastAPI:
++    """Build and return a configured FastAPI application.
++
++    Args:
++        settings: Application settings instance (injected for testability).
++
++    Returns:
++        Fully wired FastAPI application ready to serve.
++    """
++    configure_logging()
++
++    app = FastAPI(
++        title="Corda Brava",
++        description="Themed tug-of-war party game backend.",
++        version="0.1.0",
++    )
++
++    # ── CORS ─────────────────────────────────────────────────────────────────
++    origins: list[str] = (
++        ["*"]
++        if settings.CORS_ORIGINS.strip() == "*"
++        else [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
++    )
++    app.add_middleware(
++        CORSMiddleware,
++        allow_origins=origins,
++        allow_credentials=True,
++        allow_methods=["*"],
++        allow_headers=["*"],
++    )
++
++    # ── Routers ───────────────────────────────────────────────────────────────
++    app.include_router(health_router)
++
++    # Root /api router — empty now; later tasks attach sub-routers here.
++    from fastapi import APIRouter  # local import to keep top-level clean
++
++    api_router = APIRouter(prefix="/api")
++    app.include_router(api_router)
++
++    logger.info("Application created (CORS origins: %s)", origins)
++    return app
+diff --git a/backend/app/core/logging.py b/backend/app/core/logging.py
+new file mode 100644
+index 0000000..6421e0c
+--- /dev/null
++++ b/backend/app/core/logging.py
+@@ -0,0 +1,48 @@
++"""Structured logging configuration for Corda Brava.
++
++Configures the standard ``logging`` module with a JSON-friendly format for
++production and a human-friendly format for development.  Call
++``configure_logging()`` once at startup (from ``create_app``).
++"""
++
++from __future__ import annotations
++
++import logging
++import sys
++
++_HUMAN_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d — %(message)s"
++_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
++
++
++def configure_logging(level: int = logging.INFO, *, structured: bool = False) -> None:
++    """Set up root-logger handlers.
++
++    Args:
++        level: Logging level (default INFO).
++        structured: When True emit a JSON-style message per record (suitable
++            for log aggregators).  When False use the human-readable format.
++    """
++    handler = logging.StreamHandler(sys.stdout)
++
++    if structured:
++        # Minimal structured format — a full JSON formatter can replace this
++        # later without touching any call-site.
++        formatter = logging.Formatter(
++            fmt='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s",'
++            '"line":%(lineno)d,"msg":%(message)r}',
++            datefmt=_DATE_FORMAT,
++        )
++    else:
++        formatter = logging.Formatter(fmt=_HUMAN_FORMAT, datefmt=_DATE_FORMAT)
++
++    handler.setFormatter(formatter)
++
++    root = logging.getLogger()
++    # Remove any existing handlers to avoid duplicate output when the module
++    # is imported more than once (e.g., during testing with importlib reload).
++    root.handlers.clear()
++    root.addHandler(handler)
++    root.setLevel(level)
++
++    # Quieten noisy third-party loggers.
++    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+diff --git a/backend/app/core/settings.py b/backend/app/core/settings.py
+new file mode 100644
+index 0000000..1d69943
+--- /dev/null
++++ b/backend/app/core/settings.py
+@@ -0,0 +1,76 @@
++"""Application settings loaded from environment variables.
++
++All tunables have sane defaults matching prompt.md §4.  Use ``get_settings()``
++everywhere instead of instantiating ``Settings`` directly so the LRU cache
++keeps a single instance per process.
++"""
++
++from __future__ import annotations
++
++import secrets
++from functools import lru_cache
++from typing import Literal
++
++from pydantic_settings import BaseSettings, SettingsConfigDict
++
++
++class Settings(BaseSettings):
++    """Pydantic-settings model — reads from env vars and .env file.
++
++    All field names match the env var names exactly (case-insensitive on most
++    platforms, but we document them in upper-snake-case).
++    """
++
++    model_config = SettingsConfigDict(
++        env_file=".env",
++        env_file_encoding="utf-8",
++        case_sensitive=False,
++        extra="ignore",
++    )
++
++    # ── Auth ──────────────────────────────────────────────────────────────────
++    HOST_PASSWORD: str = "Inter>Gremio"
++    HOST_TOKEN_TTL_SECONDS: int = 21_600  # 6 hours
++    SECRET_KEY: str = secrets.token_hex(32)  # random dev default; override in prod
++
++    # ── Database ──────────────────────────────────────────────────────────────
++    DATABASE_URL: str = "sqlite:///./corda_brava.db"
++
++    # ── API ───────────────────────────────────────────────────────────────────
++    CORS_ORIGINS: str = "*"  # comma-separated list or wildcard
++
++    # ── Game timing ───────────────────────────────────────────────────────────
++    TICK_INTERVAL_MS: int = 500
++    DEFAULT_MATCH_DURATION_S: int = 120
++    MATCH_DURATION_MIN_S: int = 30
++    MATCH_DURATION_MAX_S: int = 600
++
++    # ── Rope mechanics ────────────────────────────────────────────────────────
++    ROPE_TARGET: int = 100
++    PULL_UNIT: float = 1.0
++    MAX_PULLS_PER_BATCH: int = 200
++
++    # ── Idempotency ───────────────────────────────────────────────────────────
++    BATCH_DEDUP_TTL_S: int = 30
++
++    # ── Policies ──────────────────────────────────────────────────────────────
++    LATE_JOIN_POLICY: Literal["block", "spectator"] = "block"
++    TEAM_BALANCE_MODE: Literal["raw", "normalized"] = "normalized"
++
++    # ── Queue backend ─────────────────────────────────────────────────────────
++    QUEUE_BACKEND: Literal["memory", "azure_service_bus"] = "memory"
++    QUEUE_LEASE_TIMEOUT_S: int = 10
++
++    # ── Azure Service Bus (read only when QUEUE_BACKEND=azure_service_bus) ─────
++    AZURE_SERVICEBUS_CONNECTION_STRING: str | None = None
++    AZURE_SERVICEBUS_QUEUE_NAME: str | None = None
++
++
++@lru_cache(maxsize=1)
++def get_settings() -> Settings:
++    """Return the cached application settings singleton.
++
++    Call ``get_settings.cache_clear()`` in tests when you need a fresh instance
++    reflecting patched env vars.
++    """
++    return Settings()
+diff --git a/backend/app/domain/__init__.py b/backend/app/domain/__init__.py
+new file mode 100644
+index 0000000..f362d56
+--- /dev/null
++++ b/backend/app/domain/__init__.py
+@@ -0,0 +1 @@
++# domain sub-package
+diff --git a/backend/app/domain/entities.py b/backend/app/domain/entities.py
+new file mode 100644
+index 0000000..fbd6074
+--- /dev/null
++++ b/backend/app/domain/entities.py
+@@ -0,0 +1,109 @@
++"""Pure domain entities for Corda Brava.
++
++These are framework-free Pydantic v2 models (no FastAPI / SQLite imports).
++They represent the game state and events as they live in memory and flow
++through the system.
++"""
++
++from __future__ import annotations
++
++from datetime import datetime
++
++from pydantic import BaseModel, Field
++
++from app.domain.enums import BalanceMode, EndReason, MatchResult, MatchStatus, Team
++
++
++class TeamConfig(BaseModel):
++    """Visual identity for a team within a match."""
++
++    id: str  # e.g. "inter" or "gremio"
++    name: str  # display name, e.g. "Inter" / "Grêmio"
++    primary_color: str  # hex, e.g. "#E5050F"
++    secondary_color: str  # hex, e.g. "#FFFFFF"
++
++
++class MatchConfig(BaseModel):
++    """Immutable match configuration set at creation time."""
++
++    duration_s: int
++    rope_target: int
++    balance_mode: BalanceMode
++    inter: TeamConfig
++    gremio: TeamConfig
++
++
++class Match(BaseModel):
++    """Full match entity — combines config, status, and runtime fields."""
++
++    id: str  # short URL-safe code, e.g. 6 alphanumeric chars
++    status: MatchStatus = MatchStatus.LOBBY
++    created_at: datetime = Field(default_factory=datetime.utcnow)
++
++    # config
++    config: MatchConfig
++
++    # runtime (populated when match starts/finishes)
++    rope_position: float = 0.0  # ∈ [-rope_target, +rope_target]
++    started_at: datetime | None = None
++    ends_at: datetime | None = None
++    result: MatchResult | None = None
++    end_reason: EndReason | None = None
++
++
++class Player(BaseModel):
++    """A participant in a match."""
++
++    id: str
++    match_id: str
++    device_id: str  # from client localStorage UUID
++    name: str
++    team: Team
++    token: str  # opaque player session token
++    joined_at: datetime = Field(default_factory=datetime.utcnow)
++
++
++class PullEvent(BaseModel):
++    """A single pull-batch event enqueued by a player.
++
++    One row per processed batch — sufficient to reconstruct analytics.
++    """
++
++    id: str
++    match_id: str
++    player_id: str
++    team: Team
++    count: int  # number of pulls in this batch (already clamped)
++    client_ts: float  # unix timestamp from the client
++    server_ts: datetime = Field(default_factory=datetime.utcnow)
++    batch_id: str  # UUID from client, used for idempotency/dedup
++
++
++class TickInput(BaseModel):
++    """Aggregated per-team pull totals for a single consumer tick.
++
++    Carries the raw pull counts and active player counts needed so the
++    scoring engine can apply either RAW or NORMALIZED balance mode.
++    """
++
++    pulls_inter: int = 0
++    pulls_gremio: int = 0
++    players_inter: int = 0  # active player count — needed for normalized scoring
++    players_gremio: int = 0
++
++
++class MatchState(BaseModel):
++    """Snapshot of all mutable runtime fields for a match.
++
++    Produced by the consumer loop and broadcast to host WebSocket clients.
++    The repo can also persist/restore this to/from the Match row.
++    """
++
++    match_id: str
++    status: MatchStatus
++    rope_position: float
++    started_at: datetime | None = None
++    ends_at: datetime | None = None
++    remaining_s: float | None = None  # computed from clock each tick
++    result: MatchResult | None = None
++    end_reason: EndReason | None = None
+diff --git a/backend/app/domain/enums.py b/backend/app/domain/enums.py
+new file mode 100644
+index 0000000..d62154c
+--- /dev/null
++++ b/backend/app/domain/enums.py
+@@ -0,0 +1,51 @@
++"""Domain enumerations for Corda Brava.
++
++All enums are str-valued so they serialize/deserialize cleanly from JSON
++and SQLite text columns without extra mapping.
++"""
++
++from enum import StrEnum
++
++
++class MatchStatus(StrEnum):
++    """Lifecycle state of a match."""
++
++    LOBBY = "lobby"
++    RUNNING = "running"
++    FINISHED = "finished"
++
++
++class Team(StrEnum):
++    """The two competing teams."""
++
++    INTER = "inter"
++    GREMIO = "gremio"
++
++
++class MatchResult(StrEnum):
++    """Who won, or draw."""
++
++    INTER = "inter"
++    GREMIO = "gremio"
++    DRAW = "draw"
++
++
++class EndReason(StrEnum):
++    """How the match ended."""
++
++    WIN = "win"
++    TIMEOUT = "timeout"
++
++
++class BalanceMode(StrEnum):
++    """Rope-scoring mode."""
++
++    RAW = "raw"
++    NORMALIZED = "normalized"
++
++
++class QueueBackend(StrEnum):
++    """Event-queue implementation backend."""
++
++    MEMORY = "memory"
++    AZURE_SERVICE_BUS = "azure_service_bus"
+diff --git a/backend/pyproject.toml b/backend/pyproject.toml
+new file mode 100644
+index 0000000..7911094
+--- /dev/null
++++ b/backend/pyproject.toml
+@@ -0,0 +1,52 @@
++[build-system]
++requires = ["setuptools>=67", "wheel"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "app"
++version = "0.1.0"
++description = "Corda Brava backend"
++requires-python = ">=3.11"
++dependencies = [
++    "fastapi>=0.111",
++    "uvicorn[standard]>=0.29",
++    "pydantic>=2.7",
++    "pydantic-settings>=2.3",
++    "pyjwt>=2.8",
++    "httpx>=0.27",
++]
++
++[project.optional-dependencies]
++dev = [
++    "pytest>=8",
++    "pytest-asyncio>=0.23",
++    "ruff>=0.5",
++    "black>=24",
++]
++
++[tool.setuptools.packages.find]
++where = ["."]
++include = ["app*"]
++
++[tool.pytest.ini_options]
++pythonpath = ["."]
++asyncio_mode = "auto"
++testpaths = ["tests"]
++
++[tool.ruff]
++line-length = 100
++target-version = "py311"
++
++[tool.ruff.lint]
++select = ["E", "F", "W", "I", "UP", "ANN"]
++ignore = [
++    "ANN001",  # allow unannotated function arguments where type is obvious
++    "ANN002",  # *args
++    "ANN003",  # **kwargs
++    "ANN201",  # return type for public function (pytest fixtures don't need it)
++    "ANN202",  # return type for private function
++]
++
++[tool.black]
++line-length = 100
++target-version = ["py311"]
+diff --git a/backend/tests/__init__.py b/backend/tests/__init__.py
+new file mode 100644
+index 0000000..65140f2
+--- /dev/null
++++ b/backend/tests/__init__.py
+@@ -0,0 +1 @@
++# tests package
+diff --git a/backend/tests/test_health.py b/backend/tests/test_health.py
+new file mode 100644
+index 0000000..cc6b717
+--- /dev/null
++++ b/backend/tests/test_health.py
+@@ -0,0 +1,14 @@
++"""Tests for the /health endpoint."""
++
++from fastapi.testclient import TestClient
++
++from app.core.app_factory import create_app
++from app.core.settings import get_settings
++
++
++def test_health_ok() -> None:
++    app = create_app(get_settings())
++    client = TestClient(app)
++    response = client.get("/health")
++    assert response.status_code == 200
++    assert response.json() == {"status": "ok"}
+diff --git a/backend/tests/test_settings.py b/backend/tests/test_settings.py
+new file mode 100644
+index 0000000..cb47692
+--- /dev/null
++++ b/backend/tests/test_settings.py
+@@ -0,0 +1,42 @@
++"""Tests for app settings defaults and env override."""
++
++import pytest
++
++from app.core.settings import Settings, get_settings
++
++
++def test_default_host_password() -> None:
++    s = Settings()
++    assert s.HOST_PASSWORD == "Inter>Gremio"
++
++
++def test_default_match_duration() -> None:
++    s = Settings()
++    assert s.DEFAULT_MATCH_DURATION_S == 120
++
++
++def test_default_rope_target() -> None:
++    s = Settings()
++    assert s.ROPE_TARGET == 100
++
++
++def test_default_team_balance_mode() -> None:
++    s = Settings()
++    assert s.TEAM_BALANCE_MODE == "normalized"
++
++
++def test_default_queue_backend() -> None:
++    s = Settings()
++    assert s.QUEUE_BACKEND == "memory"
++
++
++def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setenv("DEFAULT_MATCH_DURATION_S", "90")
++    # Must bypass lru_cache by constructing a new Settings directly.
++    s = Settings()
++    assert s.DEFAULT_MATCH_DURATION_S == 90
++
++
++def test_get_settings_returns_settings_instance() -> None:
++    settings = get_settings()
++    assert isinstance(settings, Settings)
