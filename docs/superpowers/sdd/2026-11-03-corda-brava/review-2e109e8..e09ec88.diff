@@ -1,0 +1,1277 @@
+# Review package: 2e109e844bfc2783da0f6a705b2d8614b4f59401..e09ec88
+
+## Commits
+e09ec88 feat(repos): repository interfaces + SQLite impls (WAL, unique constraints) + tests
+
+## Files changed
+ backend/app/repositories/__init__.py               |   1 +
+ backend/app/repositories/interfaces.py             |  99 +++++
+ backend/app/repositories/sqlite/__init__.py        |   1 +
+ backend/app/repositories/sqlite/bootstrap.py       | 101 +++++
+ backend/app/repositories/sqlite/connection.py      |  77 ++++
+ backend/app/repositories/sqlite/event_repo.py      |  97 +++++
+ backend/app/repositories/sqlite/match_repo.py      | 160 ++++++++
+ backend/app/repositories/sqlite/player_repo.py     | 104 +++++
+ backend/tests/repositories/__init__.py             |   0
+ backend/tests/repositories/test_sqlite_repos.py    | 426 +++++++++++++++++++++
+ .../sdd/2026-11-03-corda-brava/task-3-report.md    | 128 +++++++
+ 11 files changed, 1194 insertions(+)
+
+## Diff
+diff --git a/backend/app/repositories/__init__.py b/backend/app/repositories/__init__.py
+new file mode 100644
+index 0000000..e04b9a6
+--- /dev/null
++++ b/backend/app/repositories/__init__.py
+@@ -0,0 +1 @@
++"""Repository layer — interfaces and SQLite implementations."""
+diff --git a/backend/app/repositories/interfaces.py b/backend/app/repositories/interfaces.py
+new file mode 100644
+index 0000000..8535962
+--- /dev/null
++++ b/backend/app/repositories/interfaces.py
+@@ -0,0 +1,99 @@
++"""Repository interface definitions for Corda Brava.
++
++All protocols expose domain models (Match, Player, PullEvent) only.
++No SQLite types (sqlite3.Row, sqlite3.Cursor, etc.) ever cross this boundary.
++
++UniqueConstraintError is raised by SQLite implementations when an INSERT
++violates a UNIQUE constraint, so callers never need to import sqlite3.
++"""
++
++from __future__ import annotations
++
++from typing import Protocol
++
++from app.domain.entities import Match, Player, PullEvent
++
++
++class UniqueConstraintError(Exception):
++    """Raised when a repository INSERT would violate a UNIQUE constraint.
++
++    Wraps the underlying sqlite3.IntegrityError so callers do not need
++    to import sqlite3 directly.  The original error is stored in __cause__.
++    """
++
++
++class MatchRepository(Protocol):
++    """Persistence interface for Match entities.
++
++    Implementations must guarantee:
++    - create_match stores a new Match and returns it unchanged.
++    - get_match returns None if the id is unknown.
++    - update_match overwrites all mutable fields and returns the saved model.
++    """
++
++    def create_match(self, match: Match) -> Match:
++        """Persist a new Match and return the stored model."""
++        ...
++
++    def get_match(self, match_id: str) -> Match | None:
++        """Return the Match with the given id, or None if not found."""
++        ...
++
++    def update_match(self, match: Match) -> Match:
++        """Overwrite all fields of an existing Match and return it."""
++        ...
++
++
++class PlayerRepository(Protocol):
++    """Persistence interface for Player entities.
++
++    add_player behaviour on duplicate (match_id, device_id):
++        Raises UniqueConstraintError.  The service layer (Task 8) implements
++        idempotent-rejoin by calling get_player_by_device first.
++    """
++
++    def add_player(self, player: Player) -> Player:
++        """Persist a new Player and return the stored model.
++
++        Raises:
++            UniqueConstraintError: if (match_id, device_id) already exists.
++        """
++        ...
++
++    def get_player(self, player_id: str) -> Player | None:
++        """Return the Player with the given id, or None if not found."""
++        ...
++
++    def get_player_by_device(self, match_id: str, device_id: str) -> Player | None:
++        """Return the Player for (match_id, device_id), or None."""
++        ...
++
++    def list_players(self, match_id: str) -> list[Player]:
++        """Return all Players for the given match, unordered."""
++        ...
++
++
++class EventRepository(Protocol):
++    """Persistence interface for PullEvent entities.
++
++    add_event behaviour on duplicate (match_id, batch_id):
++        Uses INSERT OR IGNORE — the row is silently skipped.  Callers should
++        call event_exists() first when they need to detect deduplication.
++        This keeps the ingest hot-path lock-free from the caller's perspective.
++    """
++
++    def add_event(self, event: PullEvent) -> None:
++        """Persist a PullEvent.
++
++        If (match_id, batch_id) already exists the INSERT is silently ignored
++        (INSERT OR IGNORE semantics).  Use event_exists() to check.
++        """
++        ...
++
++    def event_exists(self, match_id: str, batch_id: str) -> bool:
++        """Return True if (match_id, batch_id) is already stored."""
++        ...
++
++    def list_events(self, match_id: str) -> list[PullEvent]:
++        """Return all PullEvents for the match, ordered by server_ts ascending."""
++        ...
+diff --git a/backend/app/repositories/sqlite/__init__.py b/backend/app/repositories/sqlite/__init__.py
+new file mode 100644
+index 0000000..71d5cec
+--- /dev/null
++++ b/backend/app/repositories/sqlite/__init__.py
+@@ -0,0 +1 @@
++"""SQLite repository implementations."""
+diff --git a/backend/app/repositories/sqlite/bootstrap.py b/backend/app/repositories/sqlite/bootstrap.py
+new file mode 100644
+index 0000000..c3ce278
+--- /dev/null
++++ b/backend/app/repositories/sqlite/bootstrap.py
+@@ -0,0 +1,101 @@
++"""Database bootstrap — creates tables, indexes, and unique constraints.
++
++Run once at startup (or in tests via a tmp_path db).  Safe to call multiple
++times: all statements use ``CREATE TABLE IF NOT EXISTS`` / ``CREATE INDEX
++IF NOT EXISTS``.
++
++Schema decisions
++----------------
++datetimes:  Stored as ISO-8601 text (UTC, ``+00:00`` suffix) so they survive
++            round-trips as timezone-aware Python ``datetime`` objects without
++            any epoch arithmetic.  Example: ``"2024-06-01T12:00:00+00:00"``.
++
++enums:      Stored as their ``.value`` strings (lowercase) matching StrEnum.
++
++MatchConfig: Stored inline on the matches table rather than a separate config
++             table — the config is immutable after creation and always read
++             with the match, so embedding avoids a join.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from pathlib import Path
++
++from app.repositories.sqlite.connection import get_connection, write_lock
++
++_CREATE_MATCHES = """
++CREATE TABLE IF NOT EXISTS matches (
++    id              TEXT PRIMARY KEY,
++    status          TEXT NOT NULL,
++    created_at      TEXT NOT NULL,
++    -- MatchConfig inline
++    duration_s      INTEGER NOT NULL,
++    rope_target     INTEGER NOT NULL,
++    balance_mode    TEXT NOT NULL,
++    -- TeamConfig: inter
++    inter_id        TEXT NOT NULL,
++    inter_name      TEXT NOT NULL,
++    inter_primary   TEXT NOT NULL,
++    inter_secondary TEXT NOT NULL,
++    -- TeamConfig: gremio
++    gremio_id        TEXT NOT NULL,
++    gremio_name      TEXT NOT NULL,
++    gremio_primary   TEXT NOT NULL,
++    gremio_secondary TEXT NOT NULL,
++    -- runtime
++    rope_position   REAL NOT NULL DEFAULT 0.0,
++    started_at      TEXT,
++    ends_at         TEXT,
++    result          TEXT,
++    end_reason      TEXT
++)
++"""
++
++_CREATE_PLAYERS = """
++CREATE TABLE IF NOT EXISTS players (
++    id          TEXT PRIMARY KEY,
++    match_id    TEXT NOT NULL REFERENCES matches(id),
++    device_id   TEXT NOT NULL,
++    name        TEXT NOT NULL,
++    team        TEXT NOT NULL,
++    token       TEXT NOT NULL,
++    joined_at   TEXT NOT NULL,
++    UNIQUE (match_id, device_id)
++)
++"""
++
++_CREATE_PULL_EVENTS = """
++CREATE TABLE IF NOT EXISTS pull_events (
++    id          TEXT PRIMARY KEY,
++    match_id    TEXT NOT NULL REFERENCES matches(id),
++    player_id   TEXT NOT NULL REFERENCES players(id),
++    team        TEXT NOT NULL,
++    count       INTEGER NOT NULL,
++    client_ts   REAL NOT NULL,
++    server_ts   TEXT NOT NULL,
++    batch_id    TEXT NOT NULL,
++    UNIQUE (match_id, batch_id)
++)
++"""
++
++_CREATE_IDX_PULL_EVENTS_TS = """
++CREATE INDEX IF NOT EXISTS idx_pull_events_match_ts
++    ON pull_events (match_id, server_ts)
++"""
++
++
++def bootstrap_db(db_path: str | Path) -> sqlite3.Connection:
++    """Create all tables and indexes for *db_path*.
++
++    Returns the open connection so callers can pass it to repository
++    constructors without opening a second handle.
++    """
++    conn = get_connection(db_path)
++    with write_lock():
++        conn.execute(_CREATE_MATCHES)
++        conn.execute(_CREATE_PLAYERS)
++        conn.execute(_CREATE_PULL_EVENTS)
++        conn.execute(_CREATE_IDX_PULL_EVENTS_TS)
++        conn.commit()
++    return conn
+diff --git a/backend/app/repositories/sqlite/connection.py b/backend/app/repositories/sqlite/connection.py
+new file mode 100644
+index 0000000..5e8339e
+--- /dev/null
++++ b/backend/app/repositories/sqlite/connection.py
+@@ -0,0 +1,77 @@
++"""SQLite connection factory for Corda Brava.
++
++Design notes
++------------
++WAL mode:  Every connection immediately executes ``PRAGMA journal_mode=WAL``
++           so readers do not block writers and vice versa.
++
++check_same_thread=False:
++           SQLite's default is to raise if a connection is used from a
++           different thread than the one that created it.  We disable that
++           check here and instead enforce single-writer semantics via a
++           module-level threading.Lock (_WRITE_LOCK).  Readers are safe to
++           run concurrently in WAL mode; all write operations must acquire
++           the lock before executing.
++
++Usage:
++    conn = get_connection(db_path)
++    # reads: no lock needed
++    rows = conn.execute("SELECT ...").fetchall()
++    # writes: acquire the lock
++    with write_lock():
++        conn.execute("INSERT INTO ...")
++        conn.commit()
++"""
++
++from __future__ import annotations
++
++import sqlite3
++import threading
++from contextlib import contextmanager
++from pathlib import Path
++
++_WRITE_LOCK: threading.Lock = threading.Lock()
++
++# Cache one open connection per db_path string to avoid opening/closing
++# on every repo call.  For production (one path) this is effectively a
++# module-level singleton.
++_CONNECTIONS: dict[str, sqlite3.Connection] = {}
++
++
++def get_connection(db_path: str | Path) -> sqlite3.Connection:
++    """Return (and cache) a WAL-mode sqlite3 connection for *db_path*.
++
++    The connection is opened with ``check_same_thread=False``; callers must
++    use :func:`write_lock` around any mutating statements.
++    """
++    key = str(db_path)
++    if key not in _CONNECTIONS:
++        conn = sqlite3.connect(key, check_same_thread=False)
++        conn.row_factory = sqlite3.Row
++        conn.execute("PRAGMA journal_mode=WAL")
++        conn.execute("PRAGMA foreign_keys=ON")
++        conn.commit()
++        _CONNECTIONS[key] = conn
++    return _CONNECTIONS[key]
++
++
++@contextmanager
++def write_lock() -> object:
++    """Context manager that acquires the module-level write lock.
++
++    Example::
++
++        with write_lock():
++            conn.execute("INSERT INTO matches ...")
++            conn.commit()
++    """
++    with _WRITE_LOCK:
++        yield
++
++
++def close_connection(db_path: str | Path) -> None:
++    """Close and remove the cached connection for *db_path* (useful in tests)."""
++    key = str(db_path)
++    conn = _CONNECTIONS.pop(key, None)
++    if conn is not None:
++        conn.close()
+diff --git a/backend/app/repositories/sqlite/event_repo.py b/backend/app/repositories/sqlite/event_repo.py
+new file mode 100644
+index 0000000..4977b29
+--- /dev/null
++++ b/backend/app/repositories/sqlite/event_repo.py
+@@ -0,0 +1,97 @@
++"""SQLite implementation of EventRepository.
++
++Row ↔ domain-model mapping
++---------------------------
++All 8 columns of the pull_events table map to a PullEvent entity.
++
++Deduplication (add_event on duplicate batch_id)
++------------------------------------------------
++Uses ``INSERT OR IGNORE`` — if (match_id, batch_id) already exists the
++statement succeeds silently and no row is inserted.  Callers use
++event_exists() to detect whether the event was new.  This keeps the hot-path
++ingest endpoint simple: attempt insert, then query if needed.
++
++list_events returns rows ordered by server_ts ascending so consumers can
++replay events in order.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from datetime import datetime
++from pathlib import Path
++
++from app.domain.entities import PullEvent
++from app.domain.enums import Team
++from app.repositories.sqlite.connection import get_connection, write_lock
++
++_INSERT_EVENT = """
++INSERT OR IGNORE INTO pull_events
++    (id, match_id, player_id, team, count, client_ts, server_ts, batch_id)
++VALUES
++    (:id, :match_id, :player_id, :team, :count, :client_ts, :server_ts, :batch_id)
++"""
++
++_EXISTS_EVENT = """
++SELECT 1 FROM pull_events WHERE match_id = ? AND batch_id = ? LIMIT 1
++"""
++
++_LIST_EVENTS = """
++SELECT * FROM pull_events WHERE match_id = ? ORDER BY server_ts ASC
++"""
++
++
++def _row_to_event(row: sqlite3.Row) -> PullEvent:
++    return PullEvent(
++        id=row["id"],
++        match_id=row["match_id"],
++        player_id=row["player_id"],
++        team=Team(row["team"]),
++        count=row["count"],
++        client_ts=row["client_ts"],
++        server_ts=datetime.fromisoformat(row["server_ts"]),
++        batch_id=row["batch_id"],
++    )
++
++
++def _event_to_params(event: PullEvent) -> dict[str, object]:
++    return {
++        "id": event.id,
++        "match_id": event.match_id,
++        "player_id": event.player_id,
++        "team": event.team.value,
++        "count": event.count,
++        "client_ts": event.client_ts,
++        "server_ts": event.server_ts.isoformat(),
++        "batch_id": event.batch_id,
++    }
++
++
++class SQLiteEventRepository:
++    """SQLite-backed EventRepository implementation.
++
++    Thread-safety: writes serialised by write_lock; reads run freely (WAL).
++
++    Duplicate (match_id, batch_id): silently ignored (INSERT OR IGNORE).
++    Call event_exists() when dedup detection is required.
++    """
++
++    def __init__(self, db_path: str | Path) -> None:
++        self._conn = get_connection(db_path)
++
++    def add_event(self, event: PullEvent) -> None:
++        """Persist a PullEvent.  Duplicate (match_id, batch_id) is silently ignored."""
++        params = _event_to_params(event)
++        with write_lock():
++            self._conn.execute(_INSERT_EVENT, params)
++            self._conn.commit()
++
++    def event_exists(self, match_id: str, batch_id: str) -> bool:
++        """Return True if (match_id, batch_id) is already stored."""
++        row = self._conn.execute(_EXISTS_EVENT, (match_id, batch_id)).fetchone()
++        return row is not None
++
++    def list_events(self, match_id: str) -> list[PullEvent]:
++        """Return all PullEvents for the match, ordered by server_ts ascending."""
++        rows = self._conn.execute(_LIST_EVENTS, (match_id,)).fetchall()
++        return [_row_to_event(r) for r in rows]
+diff --git a/backend/app/repositories/sqlite/match_repo.py b/backend/app/repositories/sqlite/match_repo.py
+new file mode 100644
+index 0000000..d9dbd6c
+--- /dev/null
++++ b/backend/app/repositories/sqlite/match_repo.py
+@@ -0,0 +1,160 @@
++"""SQLite implementation of MatchRepository.
++
++Row ↔ domain-model mapping
++---------------------------
++All 19 columns of the matches table map to a Match + nested MatchConfig +
++two TeamConfig objects.  Datetimes use ISO-8601 text (UTC); enum values use
++their .value strings.  No sqlite3 types escape this module.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from datetime import datetime
++from pathlib import Path
++
++from app.domain.entities import Match, MatchConfig, TeamConfig
++from app.domain.enums import BalanceMode, EndReason, MatchResult, MatchStatus
++from app.repositories.sqlite.connection import get_connection, write_lock
++
++_INSERT_MATCH = """
++INSERT INTO matches (
++    id, status, created_at,
++    duration_s, rope_target, balance_mode,
++    inter_id, inter_name, inter_primary, inter_secondary,
++    gremio_id, gremio_name, gremio_primary, gremio_secondary,
++    rope_position, started_at, ends_at, result, end_reason
++) VALUES (
++    :id, :status, :created_at,
++    :duration_s, :rope_target, :balance_mode,
++    :inter_id, :inter_name, :inter_primary, :inter_secondary,
++    :gremio_id, :gremio_name, :gremio_primary, :gremio_secondary,
++    :rope_position, :started_at, :ends_at, :result, :end_reason
++)
++"""
++
++_UPDATE_MATCH = """
++UPDATE matches SET
++    status        = :status,
++    rope_position = :rope_position,
++    started_at    = :started_at,
++    ends_at       = :ends_at,
++    result        = :result,
++    end_reason    = :end_reason
++WHERE id = :id
++"""
++
++_SELECT_MATCH = "SELECT * FROM matches WHERE id = ?"
++
++
++def _dt_to_text(dt: datetime | None) -> str | None:
++    """Serialise a timezone-aware datetime to ISO-8601 text, or None."""
++    if dt is None:
++        return None
++    return dt.isoformat()
++
++
++def _text_to_dt(text: str | None) -> datetime | None:
++    """Deserialise an ISO-8601 text column back to a timezone-aware datetime."""
++    if text is None:
++        return None
++    return datetime.fromisoformat(text)
++
++
++def _row_to_match(row: sqlite3.Row) -> Match:
++    inter = TeamConfig(
++        id=row["inter_id"],
++        name=row["inter_name"],
++        primary_color=row["inter_primary"],
++        secondary_color=row["inter_secondary"],
++    )
++    gremio = TeamConfig(
++        id=row["gremio_id"],
++        name=row["gremio_name"],
++        primary_color=row["gremio_primary"],
++        secondary_color=row["gremio_secondary"],
++    )
++    config = MatchConfig(
++        duration_s=row["duration_s"],
++        rope_target=row["rope_target"],
++        balance_mode=BalanceMode(row["balance_mode"]),
++        inter=inter,
++        gremio=gremio,
++    )
++    return Match(
++        id=row["id"],
++        status=MatchStatus(row["status"]),
++        created_at=_text_to_dt(row["created_at"]),  # type: ignore[arg-type]
++        config=config,
++        rope_position=row["rope_position"],
++        started_at=_text_to_dt(row["started_at"]),
++        ends_at=_text_to_dt(row["ends_at"]),
++        result=MatchResult(row["result"]) if row["result"] else None,
++        end_reason=EndReason(row["end_reason"]) if row["end_reason"] else None,
++    )
++
++
++def _match_to_params(match: Match) -> dict[str, object]:
++    return {
++        "id": match.id,
++        "status": match.status.value,
++        "created_at": _dt_to_text(match.created_at),
++        "duration_s": match.config.duration_s,
++        "rope_target": match.config.rope_target,
++        "balance_mode": match.config.balance_mode.value,
++        "inter_id": match.config.inter.id,
++        "inter_name": match.config.inter.name,
++        "inter_primary": match.config.inter.primary_color,
++        "inter_secondary": match.config.inter.secondary_color,
++        "gremio_id": match.config.gremio.id,
++        "gremio_name": match.config.gremio.name,
++        "gremio_primary": match.config.gremio.primary_color,
++        "gremio_secondary": match.config.gremio.secondary_color,
++        "rope_position": match.rope_position,
++        "started_at": _dt_to_text(match.started_at),
++        "ends_at": _dt_to_text(match.ends_at),
++        "result": match.result.value if match.result else None,
++        "end_reason": match.end_reason.value if match.end_reason else None,
++    }
++
++
++class SQLiteMatchRepository:
++    """SQLite-backed MatchRepository implementation.
++
++    Thread-safety: all writes serialised by the module write_lock.
++    Reads execute directly on the shared connection (WAL allows concurrent reads).
++    """
++
++    def __init__(self, db_path: str | Path) -> None:
++        self._conn = get_connection(db_path)
++
++    def create_match(self, match: Match) -> Match:
++        """INSERT a new Match row and return the model unchanged."""
++        params = _match_to_params(match)
++        with write_lock():
++            self._conn.execute(_INSERT_MATCH, params)
++            self._conn.commit()
++        return match
++
++    def get_match(self, match_id: str) -> Match | None:
++        """SELECT and deserialise a Match, or return None."""
++        row = self._conn.execute(_SELECT_MATCH, (match_id,)).fetchone()
++        if row is None:
++            return None
++        return _row_to_match(row)
++
++    def update_match(self, match: Match) -> Match:
++        """UPDATE the mutable runtime columns of an existing Match."""
++        params = {
++            "id": match.id,
++            "status": match.status.value,
++            "rope_position": match.rope_position,
++            "started_at": _dt_to_text(match.started_at),
++            "ends_at": _dt_to_text(match.ends_at),
++            "result": match.result.value if match.result else None,
++            "end_reason": match.end_reason.value if match.end_reason else None,
++        }
++        with write_lock():
++            self._conn.execute(_UPDATE_MATCH, params)
++            self._conn.commit()
++        return match
+diff --git a/backend/app/repositories/sqlite/player_repo.py b/backend/app/repositories/sqlite/player_repo.py
+new file mode 100644
+index 0000000..3a91e4b
+--- /dev/null
++++ b/backend/app/repositories/sqlite/player_repo.py
+@@ -0,0 +1,104 @@
++"""SQLite implementation of PlayerRepository.
++
++Row ↔ domain-model mapping
++---------------------------
++All 7 columns of the players table map to a Player entity.
++The UNIQUE (match_id, device_id) constraint is enforced by the DB schema;
++violations are caught here and re-raised as UniqueConstraintError so callers
++do not import sqlite3.
++"""
++
++from __future__ import annotations
++
++import sqlite3
++from datetime import datetime
++from pathlib import Path
++
++from app.domain.entities import Player
++from app.domain.enums import Team
++from app.repositories.interfaces import UniqueConstraintError
++from app.repositories.sqlite.connection import get_connection, write_lock
++
++_INSERT_PLAYER = """
++INSERT INTO players (id, match_id, device_id, name, team, token, joined_at)
++VALUES (:id, :match_id, :device_id, :name, :team, :token, :joined_at)
++"""
++
++_SELECT_PLAYER_BY_ID = "SELECT * FROM players WHERE id = ?"
++_SELECT_PLAYER_BY_DEVICE = "SELECT * FROM players WHERE match_id = ? AND device_id = ?"
++_LIST_PLAYERS = "SELECT * FROM players WHERE match_id = ?"
++
++
++def _row_to_player(row: sqlite3.Row) -> Player:
++    return Player(
++        id=row["id"],
++        match_id=row["match_id"],
++        device_id=row["device_id"],
++        name=row["name"],
++        team=Team(row["team"]),
++        token=row["token"],
++        joined_at=datetime.fromisoformat(row["joined_at"]),
++    )
++
++
++def _player_to_params(player: Player) -> dict[str, object]:
++    return {
++        "id": player.id,
++        "match_id": player.match_id,
++        "device_id": player.device_id,
++        "name": player.name,
++        "team": player.team.value,
++        "token": player.token,
++        "joined_at": player.joined_at.isoformat(),
++    }
++
++
++class SQLitePlayerRepository:
++    """SQLite-backed PlayerRepository implementation.
++
++    Thread-safety: writes serialised by write_lock; reads run freely (WAL).
++
++    Duplicate (match_id, device_id) raises UniqueConstraintError.
++    The service layer (Task 8) must call get_player_by_device first for
++    idempotent-rejoin behaviour.
++    """
++
++    def __init__(self, db_path: str | Path) -> None:
++        self._conn = get_connection(db_path)
++
++    def add_player(self, player: Player) -> Player:
++        """INSERT a new Player row.
++
++        Raises:
++            UniqueConstraintError: if (match_id, device_id) already exists.
++        """
++        params = _player_to_params(player)
++        try:
++            with write_lock():
++                self._conn.execute(_INSERT_PLAYER, params)
++                self._conn.commit()
++        except sqlite3.IntegrityError as exc:
++            raise UniqueConstraintError(
++                f"Player with device_id={player.device_id!r} already exists "
++                f"in match {player.match_id!r}"
++            ) from exc
++        return player
++
++    def get_player(self, player_id: str) -> Player | None:
++        """Return the Player by primary key, or None."""
++        row = self._conn.execute(_SELECT_PLAYER_BY_ID, (player_id,)).fetchone()
++        if row is None:
++            return None
++        return _row_to_player(row)
++
++    def get_player_by_device(self, match_id: str, device_id: str) -> Player | None:
++        """Return the Player for (match_id, device_id), or None."""
++        row = self._conn.execute(_SELECT_PLAYER_BY_DEVICE, (match_id, device_id)).fetchone()
++        if row is None:
++            return None
++        return _row_to_player(row)
++
++    def list_players(self, match_id: str) -> list[Player]:
++        """Return all Players for the given match."""
++        rows = self._conn.execute(_LIST_PLAYERS, (match_id,)).fetchall()
++        return [_row_to_player(r) for r in rows]
+diff --git a/backend/tests/repositories/__init__.py b/backend/tests/repositories/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/repositories/test_sqlite_repos.py b/backend/tests/repositories/test_sqlite_repos.py
+new file mode 100644
+index 0000000..bb1d83d
+--- /dev/null
++++ b/backend/tests/repositories/test_sqlite_repos.py
+@@ -0,0 +1,426 @@
++"""Tests for SQLite repository implementations.
++
++All tests use a tmp_path SQLite file (pytest fixture) so they are isolated
++and do not touch the project's corda_brava.db.
++
++Key assertions:
++- Match round-trips (all fields, nested MatchConfig/TeamConfig, enums, tz-aware datetimes).
++- update_match persists mutable fields.
++- Player UNIQUE (match_id, device_id) raises UniqueConstraintError (not sqlite3.IntegrityError).
++- PullEvent dedup: INSERT OR IGNORE keeps list_events length at 1.
++- list_events ordered by server_ts ascending.
++- All returned objects are domain model instances (no sqlite3.Row leakage).
++"""
++
++from __future__ import annotations
++
++import uuid
++from datetime import UTC, datetime, timedelta
++from pathlib import Path
++
++import pytest
++
++from app.domain.entities import Match, MatchConfig, Player, PullEvent, TeamConfig
++from app.domain.enums import BalanceMode, EndReason, MatchResult, MatchStatus, Team
++from app.repositories.interfaces import UniqueConstraintError
++from app.repositories.sqlite.bootstrap import bootstrap_db
++from app.repositories.sqlite.connection import close_connection
++from app.repositories.sqlite.event_repo import SQLiteEventRepository
++from app.repositories.sqlite.match_repo import SQLiteMatchRepository
++from app.repositories.sqlite.player_repo import SQLitePlayerRepository
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++
++def _make_match(match_id: str = "ABC123") -> Match:
++    inter = TeamConfig(
++        id="inter",
++        name="Inter",
++        primary_color="#E5050F",
++        secondary_color="#FFFFFF",
++    )
++    gremio = TeamConfig(
++        id="gremio",
++        name="Grêmio",
++        primary_color="#0057A6",
++        secondary_color="#000000",
++    )
++    config = MatchConfig(
++        duration_s=120,
++        rope_target=5,
++        balance_mode=BalanceMode.NORMALIZED,
++        inter=inter,
++        gremio=gremio,
++    )
++    return Match(
++        id=match_id,
++        created_at=datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC),
++        config=config,
++    )
++
++
++def _make_player(match_id: str, device_id: str = "dev-001", pid: str | None = None) -> Player:
++    return Player(
++        id=pid or str(uuid.uuid4()),
++        match_id=match_id,
++        device_id=device_id,
++        name="Alice",
++        team=Team.INTER,
++        token=str(uuid.uuid4()),
++        joined_at=datetime(2024, 6, 1, 12, 1, 0, tzinfo=UTC),
++    )
++
++
++def _make_event(
++    match_id: str,
++    player_id: str,
++    batch_id: str = "batch-001",
++    ts_offset: float = 0.0,
++) -> PullEvent:
++    return PullEvent(
++        id=str(uuid.uuid4()),
++        match_id=match_id,
++        player_id=player_id,
++        team=Team.INTER,
++        count=3,
++        client_ts=1717236000.0 + ts_offset,
++        server_ts=datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC) + timedelta(seconds=ts_offset),
++        batch_id=batch_id,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Fixtures
++# ---------------------------------------------------------------------------
++
++
++@pytest.fixture()
++def db_path(tmp_path: Path) -> Path:
++    path = tmp_path / "test.db"
++    bootstrap_db(path)
++    yield path
++    close_connection(path)
++
++
++@pytest.fixture()
++def match_repo(db_path: Path) -> SQLiteMatchRepository:
++    return SQLiteMatchRepository(db_path)
++
++
++@pytest.fixture()
++def player_repo(db_path: Path) -> SQLitePlayerRepository:
++    return SQLitePlayerRepository(db_path)
++
++
++@pytest.fixture()
++def event_repo(db_path: Path) -> SQLiteEventRepository:
++    return SQLiteEventRepository(db_path)
++
++
++# ---------------------------------------------------------------------------
++# Match tests
++# ---------------------------------------------------------------------------
++
++
++class TestMatchRepository:
++    def test_create_and_get_round_trip(self, match_repo: SQLiteMatchRepository) -> None:
++        """create_match → get_match returns an equal Match domain model."""
++        original = _make_match()
++        match_repo.create_match(original)
++
++        retrieved = match_repo.get_match(original.id)
++
++        assert retrieved is not None
++        assert isinstance(retrieved, Match)
++        # Top-level fields
++        assert retrieved.id == original.id
++        assert retrieved.status == MatchStatus.LOBBY
++        assert retrieved.rope_position == 0.0
++        assert retrieved.started_at is None
++        assert retrieved.ends_at is None
++        assert retrieved.result is None
++        assert retrieved.end_reason is None
++        # datetime round-trip: tz-aware
++        assert retrieved.created_at.tzinfo is not None
++        assert retrieved.created_at == original.created_at
++        # Config round-trip
++        assert retrieved.config.duration_s == 120
++        assert retrieved.config.rope_target == 5
++        assert retrieved.config.balance_mode == BalanceMode.NORMALIZED
++        assert retrieved.config.inter.id == "inter"
++        assert retrieved.config.inter.name == "Inter"
++        assert retrieved.config.inter.primary_color == "#E5050F"
++        assert retrieved.config.gremio.primary_color == "#0057A6"
++
++    def test_get_match_unknown_returns_none(self, match_repo: SQLiteMatchRepository) -> None:
++        assert match_repo.get_match("NOPE") is None
++
++    def test_update_match_persists_runtime_fields(self, match_repo: SQLiteMatchRepository) -> None:
++        """update_match persists rope_position, status, result, started_at."""
++        match = _make_match()
++        match_repo.create_match(match)
++
++        updated = match.model_copy(
++            update={
++                "status": MatchStatus.RUNNING,
++                "rope_position": 2.5,
++                "started_at": datetime(2024, 6, 1, 12, 5, 0, tzinfo=UTC),
++                "ends_at": datetime(2024, 6, 1, 12, 7, 0, tzinfo=UTC),
++            }
++        )
++        match_repo.update_match(updated)
++
++        retrieved = match_repo.get_match(match.id)
++        assert retrieved is not None
++        assert retrieved.status == MatchStatus.RUNNING
++        assert retrieved.rope_position == 2.5
++        assert retrieved.started_at is not None
++        assert retrieved.started_at.tzinfo is not None
++        assert retrieved.started_at == datetime(2024, 6, 1, 12, 5, 0, tzinfo=UTC)
++        assert retrieved.ends_at == datetime(2024, 6, 1, 12, 7, 0, tzinfo=UTC)
++
++    def test_update_match_result_and_end_reason(self, match_repo: SQLiteMatchRepository) -> None:
++        match = _make_match()
++        match_repo.create_match(match)
++
++        finished = match.model_copy(
++            update={
++                "status": MatchStatus.FINISHED,
++                "result": MatchResult.INTER,
++                "end_reason": EndReason.WIN,
++            }
++        )
++        match_repo.update_match(finished)
++
++        retrieved = match_repo.get_match(match.id)
++        assert retrieved is not None
++        assert retrieved.result == MatchResult.INTER
++        assert retrieved.end_reason == EndReason.WIN
++
++    def test_returned_object_is_domain_model(self, match_repo: SQLiteMatchRepository) -> None:
++        """No sqlite3.Row leaks: returned type is Match."""
++        match = _make_match()
++        match_repo.create_match(match)
++        retrieved = match_repo.get_match(match.id)
++        assert isinstance(retrieved, Match)
++
++
++# ---------------------------------------------------------------------------
++# Player tests
++# ---------------------------------------------------------------------------
++
++
++class TestPlayerRepository:
++    def test_add_and_get_player(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> None:
++        """add_player then get_player returns an equal Player domain model."""
++        match = _make_match()
++        match_repo.create_match(match)
++        player = _make_player(match.id)
++        player_repo.add_player(player)
++
++        retrieved = player_repo.get_player(player.id)
++        assert retrieved is not None
++        assert isinstance(retrieved, Player)
++        assert retrieved.id == player.id
++        assert retrieved.match_id == player.match_id
++        assert retrieved.device_id == player.device_id
++        assert retrieved.team == Team.INTER
++        assert retrieved.token == player.token
++        assert retrieved.joined_at.tzinfo is not None
++        assert retrieved.joined_at == player.joined_at
++
++    def test_get_player_by_device(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> None:
++        match = _make_match()
++        match_repo.create_match(match)
++        player = _make_player(match.id, device_id="dev-XYZ")
++        player_repo.add_player(player)
++
++        found = player_repo.get_player_by_device(match.id, "dev-XYZ")
++        assert found is not None
++        assert found.id == player.id
++
++        not_found = player_repo.get_player_by_device(match.id, "unknown")
++        assert not_found is None
++
++    def test_list_players_returns_all_for_match(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> None:
++        match = _make_match()
++        match_repo.create_match(match)
++        p1 = _make_player(match.id, device_id="dev-1", pid="pid-1")
++        p2 = _make_player(match.id, device_id="dev-2", pid="pid-2")
++        player_repo.add_player(p1)
++        player_repo.add_player(p2)
++
++        players = player_repo.list_players(match.id)
++        assert len(players) == 2
++        ids = {p.id for p in players}
++        assert ids == {"pid-1", "pid-2"}
++
++    def test_add_player_duplicate_device_raises_unique_constraint_error(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> None:
++        """Second add_player with same (match_id, device_id) raises UniqueConstraintError."""
++        match = _make_match()
++        match_repo.create_match(match)
++        p1 = _make_player(match.id, device_id="dev-dup", pid="pid-a")
++        p2 = _make_player(match.id, device_id="dev-dup", pid="pid-b")
++        player_repo.add_player(p1)
++
++        with pytest.raises(UniqueConstraintError):
++            player_repo.add_player(p2)
++
++    def test_unique_constraint_error_is_not_sqlite_error(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> None:
++        """UniqueConstraintError is NOT sqlite3.IntegrityError."""
++        import sqlite3
++
++        match = _make_match()
++        match_repo.create_match(match)
++        p1 = _make_player(match.id, device_id="dev-leak", pid="pid-x")
++        p2 = _make_player(match.id, device_id="dev-leak", pid="pid-y")
++        player_repo.add_player(p1)
++
++        with pytest.raises(UniqueConstraintError):
++            player_repo.add_player(p2)
++
++        # Must NOT be the raw sqlite3 type leaking through
++        try:
++            player_repo.add_player(p2)
++        except UniqueConstraintError:
++            pass
++        except sqlite3.IntegrityError:
++            pytest.fail("sqlite3.IntegrityError leaked past the repository boundary")
++
++    def test_returned_object_is_domain_model(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> None:
++        match = _make_match()
++        match_repo.create_match(match)
++        player = _make_player(match.id)
++        player_repo.add_player(player)
++        retrieved = player_repo.get_player(player.id)
++        assert isinstance(retrieved, Player)
++
++
++# ---------------------------------------------------------------------------
++# Event tests
++# ---------------------------------------------------------------------------
++
++
++class TestEventRepository:
++    def _setup_match_and_player(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++    ) -> tuple[Match, Player]:
++        match = _make_match()
++        match_repo.create_match(match)
++        player = _make_player(match.id)
++        player_repo.add_player(player)
++        return match, player
++
++    def test_add_event_then_event_exists_true(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++        event_repo: SQLiteEventRepository,
++    ) -> None:
++        match, player = self._setup_match_and_player(match_repo, player_repo)
++        event = _make_event(match.id, player.id, batch_id="b-001")
++        event_repo.add_event(event)
++
++        assert event_repo.event_exists(match.id, "b-001") is True
++
++    def test_event_exists_false_for_unknown_batch(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++        event_repo: SQLiteEventRepository,
++    ) -> None:
++        match, player = self._setup_match_and_player(match_repo, player_repo)
++        assert event_repo.event_exists(match.id, "no-such-batch") is False
++
++    def test_add_event_duplicate_does_not_create_second_row(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++        event_repo: SQLiteEventRepository,
++    ) -> None:
++        """INSERT OR IGNORE: second add with same batch_id keeps list length at 1."""
++        match, player = self._setup_match_and_player(match_repo, player_repo)
++        event = _make_event(match.id, player.id, batch_id="b-dup")
++        event_repo.add_event(event)
++        event_repo.add_event(event)  # second call — must not raise or duplicate
++
++        events = event_repo.list_events(match.id)
++        assert len(events) == 1
++
++    def test_list_events_ordered_by_server_ts(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++        event_repo: SQLiteEventRepository,
++    ) -> None:
++        match, player = self._setup_match_and_player(match_repo, player_repo)
++        e1 = _make_event(match.id, player.id, batch_id="b-1", ts_offset=10.0)
++        e2 = _make_event(match.id, player.id, batch_id="b-2", ts_offset=0.0)
++        e3 = _make_event(match.id, player.id, batch_id="b-3", ts_offset=5.0)
++        event_repo.add_event(e1)
++        event_repo.add_event(e2)
++        event_repo.add_event(e3)
++
++        events = event_repo.list_events(match.id)
++        assert len(events) == 3
++        # sorted by server_ts ascending
++        assert events[0].batch_id == "b-2"
++        assert events[1].batch_id == "b-3"
++        assert events[2].batch_id == "b-1"
++
++    def test_returned_objects_are_domain_models(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++        event_repo: SQLiteEventRepository,
++    ) -> None:
++        match, player = self._setup_match_and_player(match_repo, player_repo)
++        event = _make_event(match.id, player.id)
++        event_repo.add_event(event)
++        events = event_repo.list_events(match.id)
++        assert all(isinstance(e, PullEvent) for e in events)
++
++    def test_server_ts_round_trips_as_timezone_aware_datetime(
++        self,
++        match_repo: SQLiteMatchRepository,
++        player_repo: SQLitePlayerRepository,
++        event_repo: SQLiteEventRepository,
++    ) -> None:
++        match, player = self._setup_match_and_player(match_repo, player_repo)
++        original_ts = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
++        event = _make_event(match.id, player.id, batch_id="b-ts")
++        # override server_ts
++        event = event.model_copy(update={"server_ts": original_ts})
++        event_repo.add_event(event)
++
++        events = event_repo.list_events(match.id)
++        assert events[0].server_ts.tzinfo is not None
++        assert events[0].server_ts == original_ts
+diff --git a/docs/superpowers/sdd/2026-11-03-corda-brava/task-3-report.md b/docs/superpowers/sdd/2026-11-03-corda-brava/task-3-report.md
+new file mode 100644
+index 0000000..3e47481
+--- /dev/null
++++ b/docs/superpowers/sdd/2026-11-03-corda-brava/task-3-report.md
+@@ -0,0 +1,128 @@
++# Task 3 Report: Repository Interfaces + SQLite Implementations
++
++## Status: COMPLETE
++
++---
++
++## Protocol Signatures (verbatim)
++
++### interfaces.py — `app.repositories.interfaces`
++
++```python
++class UniqueConstraintError(Exception):
++    """Raised when a repository INSERT would violate a UNIQUE constraint.
++    Wraps the underlying sqlite3.IntegrityError so callers do not need
++    to import sqlite3 directly.  The original error is stored in __cause__.
++    """
++
++class MatchRepository(Protocol):
++    def create_match(self, match: Match) -> Match: ...
++    def get_match(self, match_id: str) -> Match | None: ...
++    def update_match(self, match: Match) -> Match: ...
++
++class PlayerRepository(Protocol):
++    def add_player(self, player: Player) -> Player: ...
++    def get_player(self, player_id: str) -> Player | None: ...
++    def get_player_by_device(self, match_id: str, device_id: str) -> Player | None: ...
++    def list_players(self, match_id: str) -> list[Player]: ...
++
++class EventRepository(Protocol):
++    def add_event(self, event: PullEvent) -> None: ...
++    def event_exists(self, match_id: str, batch_id: str) -> bool: ...
++    def list_events(self, match_id: str) -> list[PullEvent]: ...
++```
++
++---
++
++## UniqueConstraintError
++
++- **Location**: `app.repositories.interfaces.UniqueConstraintError` (inherits `Exception`)
++- **Raised by**: `SQLitePlayerRepository.add_player` when `sqlite3.IntegrityError` is caught
++- **Stored cause**: original `sqlite3.IntegrityError` in `__cause__`
++- **Callers never need to import sqlite3**: the error boundary is the repository implementation
++
++---
++
++## add_event Duplicate Behaviour
++
++**Choice: INSERT OR IGNORE (silent no-op)**
++
++Rationale: The ingest endpoint is the hot path. Using `INSERT OR IGNORE` keeps the call non-throwing and avoids any lock/exception overhead on duplicates. Callers that need to detect dedup (e.g. analytics) call `event_exists()` first. The `UNIQUE (match_id, batch_id)` constraint remains in the schema and is enforced at the DB level.
++
++`add_player` uses the opposite policy (raise on duplicate) because the service layer (Task 8) must decide how to handle rejoin — it calls `get_player_by_device` first.
++
++---
++
++## Datetime Storage Format
++
++All `datetime` columns stored as **ISO-8601 text with UTC offset** (e.g. `"2024-06-01T12:00:00+00:00"`).
++
++- Produced by: `datetime.isoformat()` (Python's standard method)
++- Consumed by: `datetime.fromisoformat(text)` (Python 3.11+ parses offset-aware ISO strings)
++- Result: timezone-aware `datetime` with `tzinfo=UTC` on every round-trip
++- No epoch integer arithmetic, no loss of timezone information
++
++---
++
++## WAL Mode + Write Lock Approach
++
++**File**: `app.repositories.sqlite.connection`
++
++- `get_connection(db_path)` opens a shared `sqlite3.Connection` with `check_same_thread=False`
++- Immediately executes `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`
++- One connection is cached per `db_path` string (module-level `dict`)
++- A module-level `threading.Lock` (`_WRITE_LOCK`) is held via the `write_lock()` context manager for all INSERT/UPDATE/DELETE operations
++- Reads execute without acquiring the lock (WAL allows concurrent readers)
++- This matches the spec in §12: "wrap writes in a lock"
++
++---
++
++## Files Created
++
++```
++backend/
++  app/repositories/
++    __init__.py
++    interfaces.py
++    sqlite/
++      __init__.py
++      connection.py    # WAL, lock, connection cache
++      bootstrap.py     # CREATE TABLE IF NOT EXISTS, indexes, constraints
++      match_repo.py    # SQLiteMatchRepository
++      player_repo.py   # SQLitePlayerRepository
++      event_repo.py    # SQLiteEventRepository
++  tests/repositories/
++    __init__.py
++    test_sqlite_repos.py  # 17 tests
++```
++
++---
++
++## Schema Summary (bootstrap.py)
++
++| Table         | PK  | UNIQUE constraint          | Index                          |
++|---------------|-----|----------------------------|--------------------------------|
++| `matches`     | id  | —                          | —                              |
++| `players`     | id  | (match_id, device_id)      | —                              |
++| `pull_events` | id  | (match_id, batch_id)       | (match_id, server_ts) ASC      |
++
++MatchConfig stored inline on `matches` (19 columns total) — no join needed for reads.
++
++---
++
++## Test Output
++
++```
++======================== 60 passed, 1 warning in 0.40s =========================
++```
++
++- 17 new repository tests (all pass)
++- 43 pre-existing tests still green (Tasks 1+2 domain rules, health, settings)
++- ruff: All checks passed
++- black: All files unchanged
++
++---
++
++## Commit
++
++`feat(repos): repository interfaces + SQLite impls (WAL, unique constraints) + tests`

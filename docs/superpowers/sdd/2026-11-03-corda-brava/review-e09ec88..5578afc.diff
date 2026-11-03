@@ -1,0 +1,721 @@
+# Review package: e09ec8877c8d72285d9d650803c1e38fdb80336f..5578afc
+
+## Commits
+5578afc feat(queue): broker-shaped EventQueue + in-memory lease/ack/redelivery + tests
+
+## Files changed
+ backend/app/queue/__init__.py                      |   0
+ backend/app/queue/factory.py                       |  55 +++++
+ backend/app/queue/interfaces.py                    |  83 ++++++++
+ backend/app/queue/memory.py                        | 171 ++++++++++++++++
+ backend/tests/queue/__init__.py                    |   0
+ backend/tests/queue/test_memory_queue.py           | 228 +++++++++++++++++++++
+ .../sdd/2026-11-03-corda-brava/task-4-report.md    | 132 ++++++++++++
+ 7 files changed, 669 insertions(+)
+
+## Diff
+diff --git a/backend/app/queue/__init__.py b/backend/app/queue/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/queue/factory.py b/backend/app/queue/factory.py
+new file mode 100644
+index 0000000..9a76ab1
+--- /dev/null
++++ b/backend/app/queue/factory.py
+@@ -0,0 +1,55 @@
++"""Factory that selects the correct EventQueue implementation at startup.
++
++Usage
++-----
++    from app.queue.factory import make_event_queue
++    from app.core.settings import get_settings
++
++    queue = make_event_queue(get_settings())
++    await queue.start()
++
++Adding a new backend
++--------------------
++1. Create ``app/queue/azure_service_bus.py`` with
++   ``AzureServiceBusEventQueue(EventQueue)``.
++2. Add the import and ``elif`` branch below.
++3. Set ``QUEUE_BACKEND=azure_service_bus`` in the environment.
++
++No other file changes are needed.
++"""
++
++from __future__ import annotations
++
++from app.core.settings import Settings
++from app.queue.interfaces import EventQueue
++from app.queue.memory import InMemoryEventQueue
++
++
++def make_event_queue(settings: Settings) -> EventQueue:
++    """Return the configured EventQueue implementation.
++
++    Parameters
++    ----------
++    settings:
++        Application settings.  ``settings.QUEUE_BACKEND`` selects the backend.
++
++    Returns
++    -------
++    EventQueue
++        The appropriate ``EventQueue`` implementation.  For ``memory``, this is
++        ``InMemoryEventQueue``.  For ``azure_service_bus``, a
++        ``NotImplementedError`` is raised until the adapter is implemented.
++    """
++    backend = settings.QUEUE_BACKEND
++
++    if backend == "memory":
++        return InMemoryEventQueue()
++
++    if backend == "azure_service_bus":
++        raise NotImplementedError(
++            "Azure Service Bus backend is not yet implemented.  "
++            "Create AzureServiceBusEventQueue in app/queue/azure_service_bus.py "
++            "using the azure-servicebus async SDK, then wire it here."
++        )
++
++    raise ValueError(f"Unknown QUEUE_BACKEND value: {backend!r}")
+diff --git a/backend/app/queue/interfaces.py b/backend/app/queue/interfaces.py
+new file mode 100644
+index 0000000..1d9c67f
+--- /dev/null
++++ b/backend/app/queue/interfaces.py
+@@ -0,0 +1,83 @@
++"""Provider-agnostic queue abstractions for Corda Brava.
++
++``QueueMessage`` is a thin envelope so no vendor-SDK type ever leaks into
++services or domain code.  ``EventQueue`` is a ``Protocol`` whose exact shape
++mirrors real broker semantics (Azure Service Bus, SQS, etc.) so swapping the
++backend later is: add one adapter file + flip one env var — nothing else
++changes.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Protocol
++
++from app.domain.entities import PullEvent
++
++
++@dataclass
++class QueueMessage:
++    """Provider-agnostic message envelope.
++
++    Fields
++    ------
++    id              Broker message id.  In-memory uses ``PullEvent.batch_id``.
++    payload         The wrapped ``PullEvent``.
++    delivery_count  Number of times this message has been delivered.
++                    Starts at 1; increments on every redelivery (lease expiry
++                    or ``abandon``).
++    """
++
++    id: str
++    payload: PullEvent
++    delivery_count: int = field(default=1)
++
++
++class EventQueue(Protocol):
++    """Broker-shaped async queue interface.
++
++    All implementations must honour these semantics:
++
++    * ``receive_batch`` **leases** messages — it does NOT delete them.
++    * ``ack`` permanently removes a leased message (at-least-once guarantee).
++    * Unacked messages become visible again after the lease timeout
++      (redelivery), with ``delivery_count`` incremented.
++    * ``abandon`` releases a lease early (makes message visible immediately).
++    * ``start`` / ``close`` manage the underlying connection lifecycle.
++
++    The identical receive/ack shape ensures the consumer loop works with both
++    in-memory and cloud broker implementations without modification.
++    """
++
++    async def start(self) -> None:
++        """Open the broker connection (no-op for in-memory)."""
++        ...
++
++    async def close(self) -> None:
++        """Close the broker connection gracefully."""
++        ...
++
++    async def enqueue(self, event: PullEvent) -> None:
++        """Publish a new ``PullEvent`` to the queue."""
++        ...
++
++    async def receive_batch(self, max_messages: int, max_wait_s: float) -> list[QueueMessage]:
++        """Lease up to ``max_messages`` messages.
++
++        Blocks up to ``max_wait_s`` seconds waiting for at least one message
++        to arrive.  May return fewer than ``max_messages`` or an empty list if
++        none arrive within the timeout.  Messages are **leased**, not deleted.
++        """
++        ...
++
++    async def ack(self, messages: list[QueueMessage]) -> None:
++        """Permanently remove (complete) the given messages from the queue."""
++        ...
++
++    async def abandon(self, messages: list[QueueMessage]) -> None:
++        """Release leases immediately, returning messages to pending.
++
++        The next ``receive_batch`` will see them again.  Delivery count is
++        **not** incremented here — that happens on lease-expiry redelivery.
++        """
++        ...
+diff --git a/backend/app/queue/memory.py b/backend/app/queue/memory.py
+new file mode 100644
+index 0000000..8beed6f
+--- /dev/null
++++ b/backend/app/queue/memory.py
+@@ -0,0 +1,171 @@
++"""In-memory broker-shaped EventQueue implementation.
++
++Semantics deliberately mirror Azure Service Bus so the consumer loop is
++identical for both backends:
++
++* ``enqueue``       → appends to the internal pending deque.
++* ``receive_batch`` → moves messages to the in-flight set with a lease expiry.
++                     Returns immediately if pending messages are available,
++                     otherwise polls until ``max_wait_s`` elapses.  Expired
++                     leases are reclaimed *before* serving new messages.
++* ``ack``           → permanently removes a message from the in-flight set.
++* ``abandon``       → moves a message back to pending immediately (no
++                     delivery_count increment — that happens on expiry).
++
++Injectable clock
++----------------
++The constructor accepts an optional ``time_fn`` (defaults to
++``time.monotonic``) and ``lease_timeout_s`` (defaults to
++``settings.QUEUE_LEASE_TIMEOUT_S``).  Tests pass a tiny ``lease_timeout_s``
++(e.g. 0.05 s) so redelivery can be exercised without real-time waiting.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import time
++from collections import deque
++from collections.abc import Callable
++from dataclasses import dataclass
++
++from app.domain.entities import PullEvent
++from app.queue.interfaces import QueueMessage
++
++# Sentinel default for time_fn so callers can pass None to get the default.
++_SENTINEL = object()
++
++
++@dataclass
++class _LeasedMessage:
++    """Internal record for a message currently held by a consumer."""
++
++    message: QueueMessage
++    expires_at: float  # monotonic timestamp
++
++
++class InMemoryEventQueue:
++    """Async in-memory queue with broker semantics (lease / ack / redelivery).
++
++    Parameters
++    ----------
++    lease_timeout_s:
++        How long (in seconds) a received message stays leased before it
++        becomes visible again.  Defaults to ``settings.QUEUE_LEASE_TIMEOUT_S``.
++        Pass a small value in tests to force fast redelivery.
++    time_fn:
++        Monotonic clock function.  Defaults to ``time.monotonic``.  Override
++        in tests to simulate time passing without ``asyncio.sleep``.
++    """
++
++    def __init__(
++        self,
++        *,
++        lease_timeout_s: float | None = None,
++        time_fn: Callable[[], float] | object = _SENTINEL,
++    ) -> None:
++        from app.core.settings import get_settings
++
++        self._lease_timeout_s: float = (
++            lease_timeout_s
++            if lease_timeout_s is not None
++            else float(get_settings().QUEUE_LEASE_TIMEOUT_S)
++        )
++        self._time_fn: Callable[[], float] = (
++            time.monotonic if time_fn is _SENTINEL else time_fn  # type: ignore[assignment]
++        )
++
++        self._pending: deque[QueueMessage] = deque()
++        self._inflight: dict[str, _LeasedMessage] = {}  # keyed by QueueMessage.id
++        self._lock = asyncio.Lock()
++
++    # ── Lifecycle ─────────────────────────────────────────────────────────────
++
++    async def start(self) -> None:
++        """No-op for the in-memory backend."""
++
++    async def close(self) -> None:
++        """No-op for the in-memory backend."""
++
++    # ── Core operations ───────────────────────────────────────────────────────
++
++    async def enqueue(self, event: PullEvent) -> None:
++        """Append a new message to the pending queue."""
++        msg = QueueMessage(id=event.batch_id, payload=event, delivery_count=1)
++        async with self._lock:
++            self._pending.append(msg)
++
++    async def receive_batch(self, max_messages: int, max_wait_s: float) -> list[QueueMessage]:
++        """Lease up to ``max_messages`` messages, waiting up to ``max_wait_s``.
++
++        Steps:
++        1. Reclaim any expired leases (move them back to pending with
++           incremented delivery_count).
++        2. If pending messages are available, lease up to ``max_messages`` and
++           return immediately.
++        3. Otherwise sleep in short increments until a message arrives or
++           ``max_wait_s`` elapses.
++        """
++        deadline = self._time_fn() + max_wait_s
++        poll_interval = 0.01  # 10 ms polling granularity
++
++        while True:
++            async with self._lock:
++                self._reclaim_expired_leases()
++                if self._pending:
++                    return self._take_messages(max_messages)
++
++            remaining = deadline - self._time_fn()
++            if remaining <= 0:
++                return []
++            await asyncio.sleep(min(poll_interval, remaining))
++
++    async def ack(self, messages: list[QueueMessage]) -> None:
++        """Permanently remove the given messages from the in-flight set."""
++        async with self._lock:
++            for msg in messages:
++                self._inflight.pop(msg.id, None)
++
++    async def abandon(self, messages: list[QueueMessage]) -> None:
++        """Release leases immediately, returning messages to the pending queue.
++
++        Delivery count is intentionally *not* incremented here — that happens
++        only on lease-expiry redelivery.
++        """
++        async with self._lock:
++            for msg in messages:
++                leased = self._inflight.pop(msg.id, None)
++                if leased is not None:
++                    self._pending.appendleft(leased.message)
++
++    # ── Internal helpers (must be called with self._lock held) ────────────────
++
++    def _reclaim_expired_leases(self) -> None:
++        """Move expired leased messages back to pending with incremented count."""
++        now = self._time_fn()
++        expired_ids = [
++            msg_id for msg_id, leased in self._inflight.items() if leased.expires_at <= now
++        ]
++        for msg_id in expired_ids:
++            leased = self._inflight.pop(msg_id)
++            # Clone with delivery_count incremented so consumers can detect
++            # redeliveries.
++            original = leased.message
++            redelivered = QueueMessage(
++                id=original.id,
++                payload=original.payload,
++                delivery_count=original.delivery_count + 1,
++            )
++            self._pending.append(redelivered)
++
++    def _take_messages(self, max_messages: int) -> list[QueueMessage]:
++        """Move up to ``max_messages`` from pending to in-flight and return them."""
++        taken: list[QueueMessage] = []
++        expires_at = self._time_fn() + self._lease_timeout_s
++        for _ in range(min(max_messages, len(self._pending))):
++            msg = self._pending.popleft()
++            self._inflight[msg.id] = _LeasedMessage(
++                message=msg,
++                expires_at=expires_at,
++            )
++            taken.append(msg)
++        return taken
+diff --git a/backend/tests/queue/__init__.py b/backend/tests/queue/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/queue/test_memory_queue.py b/backend/tests/queue/test_memory_queue.py
+new file mode 100644
+index 0000000..269c024
+--- /dev/null
++++ b/backend/tests/queue/test_memory_queue.py
+@@ -0,0 +1,228 @@
++"""Tests for InMemoryEventQueue — broker semantics: lease / ack / redelivery.
++
++All tests are async (pytest-asyncio, asyncio_mode=auto).
++
++Coverage:
++* start() is a no-op
++* enqueue → receive_batch returns a leased QueueMessage with the correct payload
++* ack removes the message (not redelivered on next receive_batch)
++* REDELIVERY: a message not acked before lease expiry is redelivered with
++  delivery_count >= 2
++* abandon returns a message to pending immediately (next receive_batch picks it up)
++* receive_batch returns empty within max_wait_s when queue is empty
++* factory: make_event_queue(memory settings) → InMemoryEventQueue instance
++* factory: make_event_queue(azure_service_bus settings) → NotImplementedError
++  mentioning AzureServiceBusEventQueue
++"""
++
++from __future__ import annotations
++
++import asyncio
++import time
++from datetime import UTC, datetime
++
++import pytest
++
++from app.core.settings import Settings
++from app.domain.entities import PullEvent
++from app.domain.enums import Team
++from app.queue.factory import make_event_queue
++from app.queue.interfaces import QueueMessage
++from app.queue.memory import InMemoryEventQueue
++
++# ── Helpers ───────────────────────────────────────────────────────────────────
++
++
++def _make_event(
++    batch_id: str = "batch-001",
++    match_id: str = "match-abc",
++    player_id: str = "player-1",
++    team: Team = Team.INTER,
++    count: int = 5,
++) -> PullEvent:
++    """Create a minimal PullEvent for testing."""
++    return PullEvent(
++        id=f"evt-{batch_id}",
++        match_id=match_id,
++        player_id=player_id,
++        team=team,
++        count=count,
++        client_ts=time.time(),
++        server_ts=datetime.now(tz=UTC),
++        batch_id=batch_id,
++    )
++
++
++# ── start() / close() ─────────────────────────────────────────────────────────
++
++
++async def test_start_is_noop() -> None:
++    """start() and close() complete without raising."""
++    q = InMemoryEventQueue()
++    await q.start()
++    await q.close()
++
++
++# ── enqueue → receive_batch ───────────────────────────────────────────────────
++
++
++async def test_enqueue_then_receive_returns_message() -> None:
++    """enqueue then receive_batch returns exactly one leased QueueMessage."""
++    q = InMemoryEventQueue()
++    event = _make_event()
++    await q.enqueue(event)
++
++    msgs = await q.receive_batch(max_messages=10, max_wait_s=1.0)
++
++    assert len(msgs) == 1
++    msg = msgs[0]
++    assert isinstance(msg, QueueMessage)
++    assert msg.payload == event
++    assert msg.id == event.batch_id
++    assert msg.delivery_count == 1
++
++
++async def test_received_message_is_leased_not_deleted() -> None:
++    """A received but unacked message is still in the in-flight set, not pending."""
++    q = InMemoryEventQueue()
++    await q.enqueue(_make_event())
++
++    msgs = await q.receive_batch(max_messages=10, max_wait_s=1.0)
++    assert len(msgs) == 1
++
++    # A second receive_batch should return empty because the message is leased
++    # (lease has not expired yet — lease_timeout_s defaults to 10 s).
++    second = await q.receive_batch(max_messages=10, max_wait_s=0.05)
++    assert second == [], "Leased message must not be returned again before ack/expiry"
++
++
++# ── ack ───────────────────────────────────────────────────────────────────────
++
++
++async def test_ack_removes_message_permanently() -> None:
++    """After ack, the message must not be redelivered on any subsequent receive."""
++    q = InMemoryEventQueue()
++    await q.enqueue(_make_event())
++
++    msgs = await q.receive_batch(max_messages=10, max_wait_s=1.0)
++    assert msgs
++    await q.ack(msgs)
++
++    # Must be empty even with a fresh receive.
++    second = await q.receive_batch(max_messages=10, max_wait_s=0.05)
++    assert second == [], "Acked message must never be redelivered"
++
++
++# ── REDELIVERY ────────────────────────────────────────────────────────────────
++
++
++async def test_redelivery_after_lease_expiry() -> None:
++    """At-least-once: an unacked message is redelivered after lease expires.
++
++    We use a tiny lease_timeout_s (0.05 s) so the test finishes fast.
++    delivery_count must be >= 2 on the redelivered copy.
++    """
++    LEASE_S = 0.05  # tiny so we don't wait 10 seconds
++
++    q = InMemoryEventQueue(lease_timeout_s=LEASE_S)
++    event = _make_event()
++    await q.enqueue(event)
++
++    # First receive — leases the message.
++    first = await q.receive_batch(max_messages=10, max_wait_s=1.0)
++    assert len(first) == 1
++    assert first[0].delivery_count == 1
++
++    # Do NOT ack — wait past the lease.
++    await asyncio.sleep(LEASE_S + 0.05)
++
++    # Second receive — lease has expired, message must be redelivered.
++    second = await q.receive_batch(max_messages=10, max_wait_s=1.0)
++    assert len(second) == 1, "Message must be redelivered after lease expiry"
++    assert second[0].id == event.batch_id, "Same message id"
++    assert (
++        second[0].delivery_count >= 2
++    ), f"delivery_count must be >= 2 on redelivery, got {second[0].delivery_count}"
++
++
++# ── abandon ───────────────────────────────────────────────────────────────────
++
++
++async def test_abandon_returns_message_to_pending_immediately() -> None:
++    """abandon() makes the message visible on the very next receive_batch."""
++    q = InMemoryEventQueue(lease_timeout_s=30.0)  # long lease so expiry doesn't interfere
++    await q.enqueue(_make_event())
++
++    msgs = await q.receive_batch(max_messages=10, max_wait_s=1.0)
++    assert msgs
++
++    # Abandon immediately — no sleep needed.
++    await q.abandon(msgs)
++
++    # Must be visible again right away.
++    second = await q.receive_batch(max_messages=10, max_wait_s=0.5)
++    assert len(second) == 1, "Abandoned message must be immediately visible"
++    assert second[0].id == msgs[0].id
++
++
++# ── empty queue / wait ────────────────────────────────────────────────────────
++
++
++async def test_receive_batch_waits_and_returns_empty_when_queue_empty() -> None:
++    """receive_batch returns [] within max_wait_s if no messages are enqueued."""
++    q = InMemoryEventQueue()
++    max_wait = 0.1  # 100 ms — fast enough for tests
++
++    start = time.monotonic()
++    result = await q.receive_batch(max_messages=10, max_wait_s=max_wait)
++    elapsed = time.monotonic() - start
++
++    assert result == [], "Expected empty list when no messages"
++    # Allow some slack: elapsed should be >= 80% of max_wait but not crazy long.
++    assert elapsed >= max_wait * 0.8, f"Expected to wait ~{max_wait}s, only waited {elapsed:.3f}s"
++
++
++async def test_receive_batch_returns_quickly_when_message_available() -> None:
++    """receive_batch should return without waiting full max_wait_s if message exists."""
++    q = InMemoryEventQueue()
++    await q.enqueue(_make_event())
++
++    start = time.monotonic()
++    msgs = await q.receive_batch(max_messages=10, max_wait_s=5.0)
++    elapsed = time.monotonic() - start
++
++    assert len(msgs) == 1
++    assert elapsed < 1.0, f"Should return quickly, took {elapsed:.3f}s"
++
++
++# ── multiple messages ─────────────────────────────────────────────────────────
++
++
++async def test_receive_batch_respects_max_messages() -> None:
++    """receive_batch returns at most max_messages items."""
++    q = InMemoryEventQueue()
++    for i in range(5):
++        await q.enqueue(_make_event(batch_id=f"batch-{i:03d}"))
++
++    msgs = await q.receive_batch(max_messages=3, max_wait_s=1.0)
++    assert len(msgs) == 3
++
++
++# ── factory ───────────────────────────────────────────────────────────────────
++
++
++def test_factory_memory_returns_inmemory_instance() -> None:
++    """make_event_queue with QUEUE_BACKEND=memory returns InMemoryEventQueue."""
++    settings = Settings(QUEUE_BACKEND="memory")
++    queue = make_event_queue(settings)
++    assert isinstance(queue, InMemoryEventQueue)
++
++
++def test_factory_azure_raises_not_implemented() -> None:
++    """make_event_queue with azure_service_bus raises NotImplementedError."""
++    settings = Settings(QUEUE_BACKEND="azure_service_bus")
++    with pytest.raises(NotImplementedError) as exc_info:
++        make_event_queue(settings)
++    assert "AzureServiceBusEventQueue" in str(
++        exc_info.value
++    ), "Error message must mention AzureServiceBusEventQueue"
+diff --git a/docs/superpowers/sdd/2026-11-03-corda-brava/task-4-report.md b/docs/superpowers/sdd/2026-11-03-corda-brava/task-4-report.md
+new file mode 100644
+index 0000000..5937e96
+--- /dev/null
++++ b/docs/superpowers/sdd/2026-11-03-corda-brava/task-4-report.md
+@@ -0,0 +1,132 @@
++# Task 4 Report — EventQueue abstraction + in-memory broker-shaped implementation
++
++**Date:** 2026-11-03
++**Status:** DONE
++
++---
++
++## 1. Files Created
++
++| File | Purpose |
++|------|---------|
++| `backend/app/queue/__init__.py` | Package marker |
++| `backend/app/queue/interfaces.py` | `QueueMessage` dataclass + `EventQueue` Protocol |
++| `backend/app/queue/memory.py` | `InMemoryEventQueue` (async, lease, ack, redelivery) |
++| `backend/app/queue/factory.py` | `make_event_queue(settings)` factory |
++| `backend/tests/queue/__init__.py` | Test package marker |
++| `backend/tests/queue/test_memory_queue.py` | 11 async tests |
++
++---
++
++## 2. QueueMessage / EventQueue signatures (verbatim)
++
++```python
++@dataclass
++class QueueMessage:
++    id: str                 # broker message id (uses batch_id for in-memory)
++    payload: PullEvent
++    delivery_count: int = field(default=1)
++
++class EventQueue(Protocol):
++    async def start(self) -> None: ...                 # connect (no-op in memory)
++    async def close(self) -> None: ...
++    async def enqueue(self, event: PullEvent) -> None: ...
++    async def receive_batch(self, max_messages: int, max_wait_s: float) -> list[QueueMessage]: ...  # leased, not deleted
++    async def ack(self, messages: list[QueueMessage]) -> None: ...      # complete/remove
++    async def abandon(self, messages: list[QueueMessage]) -> None: ...  # release lease early
++```
++
++---
++
++## 3. InMemoryEventQueue constructor — injectable lease/clock
++
++```python
++class InMemoryEventQueue:
++    def __init__(
++        self,
++        *,
++        lease_timeout_s: float | None = None,
++        time_fn: Callable[[], float] | object = _SENTINEL,
++    ) -> None:
++```
++
++- `lease_timeout_s`: overrides `settings.QUEUE_LEASE_TIMEOUT_S` (default 10 s). Tests pass `0.05` so redelivery can be forced without real-time waiting.
++- `time_fn`: monotonic clock (defaults to `time.monotonic`). Can be overridden in tests to simulate time passage; currently tests just use `asyncio.sleep` with the tiny timeout.
++
++---
++
++## 4. Lease-expiry reclaim mechanism
++
++Inside `receive_batch`, before serving any new messages, the method calls `_reclaim_expired_leases()` (lock held). This iterates the `_inflight` dict and moves any entry whose `expires_at <= now()` back to the `_pending` deque, with `delivery_count` incremented by 1. The reclaimed message is a new `QueueMessage` object (same `id` and `payload`) so the redelivery is transparent to consumers.
++
++```
++receive_batch() flow:
++  1. acquire lock
++  2. _reclaim_expired_leases()       # check inflight for expires_at <= now
++  3. if pending: _take_messages()    # move from pending → inflight with new expiry
++  4. release lock
++  5. if none found: sleep 10ms, retry until deadline
++```
++
++---
++
++## 5. Factory behavior
++
++```python
++def make_event_queue(settings: Settings) -> EventQueue:
++    if backend == "memory":
++        return InMemoryEventQueue()
++    if backend == "azure_service_bus":
++        raise NotImplementedError(
++            "...Create AzureServiceBusEventQueue in app/queue/azure_service_bus.py..."
++        )
++```
++
++- `QUEUE_BACKEND=memory` → returns `InMemoryEventQueue()` (default lease from settings)
++- `QUEUE_BACKEND=azure_service_bus` → `NotImplementedError` explicitly naming `AzureServiceBusEventQueue`
++- Azure settings (`AZURE_SERVICEBUS_CONNECTION_STRING` / `_QUEUE_NAME`) are never accessed for the memory backend
++
++---
++
++## 6. Test results
++
++```
++71 passed in 0.72s  (60 prior + 11 new queue tests)
++ruff: All checks passed
++black: 6 files would be left unchanged
++```
++
++### Queue-specific tests (11)
++
++| Test | What it verifies |
++|------|-----------------|
++| `test_start_is_noop` | `start()` and `close()` complete without error |
++| `test_enqueue_then_receive_returns_message` | `enqueue` + `receive_batch` returns leased `QueueMessage` |
++| `test_received_message_is_leased_not_deleted` | Second receive while lease active returns empty |
++| `test_ack_removes_message_permanently` | After `ack`, never redelivered |
++| **`test_redelivery_after_lease_expiry`** | Core at-least-once proof: 0.05s lease, sleep past expiry, assert `delivery_count >= 2` |
++| `test_abandon_returns_message_to_pending_immediately` | `abandon` makes message visible on next receive |
++| `test_receive_batch_waits_and_returns_empty_when_queue_empty` | Returns `[]` and waits ~`max_wait_s` |
++| `test_receive_batch_returns_quickly_when_message_available` | Returns in <1s when message ready |
++| `test_receive_batch_respects_max_messages` | Returns at most `max_messages` items |
++| `test_factory_memory_returns_inmemory_instance` | Factory → `isinstance(InMemoryEventQueue)` |
++| `test_factory_azure_raises_not_implemented` | Factory raises `NotImplementedError` mentioning `AzureServiceBusEventQueue` |
++
++### Redelivery test output (key excerpt)
++
++```
++tests/queue/test_memory_queue.py::test_redelivery_after_lease_expiry PASSED
++```
++
++Lease set to 0.05 s; after `asyncio.sleep(0.1)`, the second `receive_batch` returned the same message with `delivery_count=2`, proving genuine at-least-once redelivery.
++
++---
++
++## 7. Future Azure Service Bus adapter
++
++To implement the Azure backend:
++1. Create `backend/app/queue/azure_service_bus.py` with `AzureServiceBusEventQueue` using `azure-servicebus` async SDK (`ServiceBusClient.from_connection_string`, `receive_messages`, `complete_message`).
++2. Add one import + `elif` branch in `factory.py`.
++3. Set `QUEUE_BACKEND=azure_service_bus` in env.
++
++No other file changes are needed (zero consumer-loop changes).

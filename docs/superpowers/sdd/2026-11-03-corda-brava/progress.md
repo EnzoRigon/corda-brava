@@ -50,3 +50,31 @@ Task 2: complete (commits 05d2c1d..ee177b5, review clean). Minors deferred: (a) 
 Ruling (interface): resolve_result signature is `resolve_result(state, *, timed_out: bool, rope_target: int)` — gained rope_target kwarg vs brief (needed by check_win). Thread into Task 6 (consumer) dispatch so callers pass rope_target. Cost if wrong: a caller TypeError caught immediately by tests.
 Ruling (migrate to main): USER explicitly instructed (direct msg) to finish the worktree, merge to main, continue dev on main. Opção A chosen by user: finish Task 2 + review first, then merge Tasks 1+2. Executing now. Cost if wrong: main gets reviewed-clean commits; reversible via git if needed.
 
+## MIGRATION TO MAIN (done)
+- Exited worktree (kept). Back in main checkout /Users/pauloricardodalsoto/orca/projects/trabGb.
+- main had diverged: commit 2ad7371 added docs/, prompt.md, .claude/skills/pixel-art-studio/ (the sprite-gen work that produced the owner's mascot gifs/pngs). NO backend files → disjoint from worktree branch.
+- Merged worktree-corda-brava into main (merge commit f076ea0, no conflicts). Backend Tasks 1+2 now on main.
+- Versioned SDD scratch (ledger/briefs/reports/diffs) into tracked docs/superpowers/sdd/2026-11-03-corda-brava/ + added .gitignore + untracked .DS_Store (commit 2e109e8). User can resume in another session from these tracked files.
+- Verified: backend source intact on main; python3 3.14.2 available; .venv is gitignored (subagents recreate per task).
+- ALL FURTHER WORK HAPPENS ON main (no more worktree). Dispatch cwd = /Users/pauloricardodalsoto/orca/projects/trabGb. Live ledger = THIS tracked file (docs/superpowers/sdd/...). Keep it updated and it is auto-versioned on next commit.
+
+NEXT: Task 3 (repositories + SQLite). BASE for Task 3 = current HEAD 2e109e8.
+
+## Worktree removed (user instruction)
+Worktree + branch worktree-corda-brava fully merged into main, then removed (git worktree remove --force + branch -d + prune). Single branch main @ 2e109e8 at that point. All work on main henceforth.
+
+Task 3: implemented (commit e09ec88; 60 pass [17 new repo + 43 prior]; lint clean). Review (sonnet-1M): Spec ✅, Quality Approved. UniqueConstraintError wraps sqlite IntegrityError (player_repo); add_event uses INSERT OR IGNORE (dedup, no crash); WAL + module threading.Lock write_lock; datetimes isoformat/fromisoformat tz-aware UTC; enums stored as .value. Minors deferred: (a) write_lock() annotated -> object not Generator; (b) bootstrap_db returns raw sqlite3.Connection (infra, tests discard it).
+Task 3: complete (commits 2e109e8..e09ec88, review clean).
+
+NEXT: Task 4 (EventQueue broker-shaped + in-memory lease/ack/redelivery). BASE = e09ec88. Then Task 5 (host auth). Both depend only on Task 1 entities (PullEvent). Sequential (no parallel implementers per SDD).
+
+Task 4: implemented (commit 5578afc; 71 pass [60 prior + 11 queue]; lint clean). Review (sonnet-1M): Spec ✅, Quality Approved. Genuine broker semantics: receive_batch leases into _inflight with expires_at; _reclaim_expired_leases inside receive_batch moves expired back to _pending with delivery_count+1; ack pops permanently; abandon releases early (no count bump); factory memory→InMemoryEventQueue, azure_service_bus→NotImplementedError naming AzureServiceBusEventQueue. Redelivery test load-bearing confirmed (lease 0.05s, no ack, re-receive delivery_count>=2). Constructor injectable: lease_timeout_s, time_fn. Important (deferred): receive_batch polls ~100Hz when empty (future: asyncio.Event). Minors (deferred): abandon count diverges from Azure native (adapter will match); factory unknown-backend ValueError untested.
+Task 4: complete (commits e09ec88..5578afc, review clean).
+
+## Phase A status: Tasks 1,2,3,4 COMPLETE & on main. Task 5 (host auth) still pending.
+## HEAD after Task 4 = 5578afc. BASE for Task 5 = 5578afc.
+
+## END-OF-DAY (user plan): finish today, resume tomorrow in a NEW session.
+User instructions for wrap-up: (1) create root CLAUDE.md + README.md explaining repo/project/how-to-proceed/how-to-keep-progress-and-docs-updated; (2) commit everything; (3) push WHOLE repo to https://github.com/PauloDalsoto/corda-brava (awaiting user confirm: repo already created? push only main?).
+Asset policy to document: NO code draws/renders the club mascots or crests; the one asset step only copies owner-authored committed image files and displays them.
+
