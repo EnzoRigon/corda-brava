@@ -35,3 +35,9 @@ npm test -- --run: 5 files, 25 tests pass. tsc --noEmit clean. npm run lint clea
 - Join/stored-session always route via /wait rather than calling /me directly in Join; polling does the hop.
 - Join pick uses role=radio buttons (no native radios).
 - Not verified on a real phone / in a browser.
+
+## Fix round 1 (commit 7ecccb8)
+- useMePolling: in-flight guard (no overlapping /me), polling stops once screen is end, 404 treated like 401/403 (clear session, back to join).
+- PullButton: +1 keys from an incrementing ref counter; pointerdown ignores e.button !== 0; onContextMenu prevented.
+- New tests: PullButton.test.tsx (pointerdown+click counts once, keyboard click counts once, right button ignored); useMePolling (no second call while pending, stops on end, 404 to join).
+- Checks: 31 tests pass (6 files), tsc, lint, build clean.
