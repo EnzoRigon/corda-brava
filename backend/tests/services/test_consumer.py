@@ -140,7 +140,9 @@ async def test_fully_capped_batch_is_acked_but_not_recorded(env: Env) -> None:
     await env.pull(Team.INTER, 9, "c2")  # no room left -> count 0
     await loop.tick()
     assert [e.batch_id for e in env.events.list_events(env.match.id)] == ["c1"]
-    assert [e["count"] for e in env.sent[-1]["events"]] == [5]
+    assert [e["count"] for e in env.sent[0]["events"]] == [
+        5
+    ]  # sent[0] is the tick (win ends after)
     await asyncio.sleep(0.03)  # past the lease: both must have been acked
     assert await env.queue.receive_batch(10, 0) == []
 
@@ -174,7 +176,7 @@ async def test_tick_events_list_names_teams_counts(env: Env) -> None:
 async def test_tick_events_capped_at_20_most_recent(env: Env) -> None:
     loop = env.force_running()
     for i in range(25):
-        await env.pull(Team.INTER, 0, f"c{i}")
+        await env.pull(Team.INTER if i % 2 else Team.GREMIO, 1, f"c{i}")  # net rope stays < 5
     await loop.tick()
     assert len(env.sent[-1]["events"]) == 20
 

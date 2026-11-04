@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     ROPE_TARGET: int = 100
     PULL_UNIT: float = 1.0
     MAX_PULLS_PER_BATCH: int = 200
-    MAX_PULLS_PER_PLAYER_PER_S: int = 30  # anti-cheat: per-player cap, applied per tick
+    MAX_PULLS_PER_PLAYER_PER_S: int = 50  # anti-cheat: per-player cap, applied per tick
 
     # ── Idempotency ───────────────────────────────────────────────────────────
     BATCH_DEDUP_TTL_S: int = 30
