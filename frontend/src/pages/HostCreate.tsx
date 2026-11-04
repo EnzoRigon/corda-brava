@@ -3,6 +3,9 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { createMatch } from "../api/hostApi";
 import { ApiError } from "../api/client";
 import type { BalanceMode } from "../types/api";
+import { Logo } from "../components/Logo";
+import { PixelButton } from "../components/PixelButton";
+import { PixelPanel } from "../components/PixelPanel";
 import { getHostToken } from "./HostLogin";
 
 // Mirrors backend MATCH_DURATION_MIN_S / MAX_S defaults.
@@ -33,8 +36,10 @@ export default function HostCreate() {
   }
 
   return (
-    <main className="host-page">
-      <h1>Nova partida</h1>
+    <main className="host-page center">
+      <Logo scale={2} />
+      <h1 className="pixel-title">Nova partida</h1>
+      <PixelPanel className="form-panel">
       <form className="join-form" onSubmit={submit}>
         <label>
           Duração (segundos)
@@ -48,9 +53,10 @@ export default function HostCreate() {
           </select>
         </label>
         {err && <p role="alert">{err}</p>}
-        <button className="join-submit" disabled={busy || durationS < MIN_S || durationS > MAX_S}>Criar partida</button>
+        <PixelButton type="submit" disabled={busy || durationS < MIN_S || durationS > MAX_S}>Criar partida</PixelButton>
         <small>Entre {MIN_S} e {MAX_S} segundos.</small>
       </form>
+      </PixelPanel>
     </main>
   );
 }

@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { startMatch } from "../api/hostApi";
 import { ApiError, PUBLIC_BASE } from "../api/client";
 import { useHostSocket } from "../hooks/useHostSocket";
 import QRCode from "../components/QRCode";
 import TeamColumn from "../components/TeamColumn";
+import { Logo } from "../components/Logo";
+import { PixelButton } from "../components/PixelButton";
+import { PixelPanel } from "../components/PixelPanel";
+import { play } from "../lib/sfx";
 import { getHostToken } from "./HostLogin";
 
 export default function HostLobby() {
@@ -16,6 +20,13 @@ export default function HostLobby() {
   const { snapshot, status, terminal, authError } = useHostSocket(id, token);
   const joinUrl = snapshot?.joinUrl ?? routed ?? `${PUBLIC_BASE}/j/${id}`;
   const [err, setErr] = useState("");
+  const total = (snapshot?.roster.inter.length ?? 0) + (snapshot?.roster.gremio.length ?? 0);
+  const seen = useRef<number | null>(null);
+  useEffect(() => {
+    if (!snapshot) return;
+    if (seen.current !== null && total > seen.current) play("join");
+    seen.current = total;
+  }, [snapshot, total]);
 
   if (!token || authError) return <Navigate to="/host/login" replace />;
   if (status === "RUNNING") return <Navigate to={`/host/match/${id}`} replace />;
@@ -23,7 +34,6 @@ export default function HostLobby() {
   if (terminal) return <Navigate to={terminal.type === "reset" ? `/host/lobby/${terminal.newMatchId}` : "/host/create"} replace />;
 
   const roster = snapshot?.roster ?? { inter: [], gremio: [] };
-  const total = roster.inter.length + roster.gremio.length;
 
   async function start() {
     try {
@@ -37,17 +47,20 @@ export default function HostLobby() {
 
   return (
     <main className="host-page lobby">
-      <h1>Escaneie para entrar</h1>
-      <QRCode url={joinUrl} />
-      <p className="join-url">{joinUrl}</p>
+      <Logo scale={2} small />
+      <h1 className="pixel-title">Escaneie para entrar</h1>
+      <PixelPanel className="qr-panel">
+        <QRCode url={joinUrl} />
+        <p className="join-url">{joinUrl}</p>
+      </PixelPanel>
       <div className="lobby-teams">
         <TeamColumn team="inter" players={roster.inter} />
         <TeamColumn team="gremio" players={roster.gremio} />
       </div>
       {err && <p role="alert">{err}</p>}
-      <button className="join-submit start-btn" onClick={start} disabled={!snapshot || total === 0}>
+      <PixelButton className="start-btn" onClick={start} disabled={!snapshot || total === 0}>
         Iniciar partida
-      </button>
+      </PixelButton>
     </main>
   );
 }

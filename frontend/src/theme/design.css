@@ -1,0 +1,87 @@
+/* ================= Pixel design system (tokens, keyframes, panel, button, scene) ================= */
+:root {
+  --ink: #141019;
+  --gold: #ffe27a;
+  --night: #0a0c22;
+  --pitch-h-match: 44vh;
+  --s: 2; /* integer pixel scale for scenery */
+  /* 4px notched corners */
+  --notch: polygon(0 4px, 4px 4px, 4px 0, calc(100% - 4px) 0, calc(100% - 4px) 4px, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 4px calc(100% - 4px), 0 calc(100% - 4px));
+}
+@media (min-width: 900px) { :root { --s: 3; } }
+@media (min-width: 1500px) { :root { --s: 4; } }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.pixel-title { color: var(--gold); text-shadow: 4px 4px 0 #6e3f16, 8px 8px 0 var(--ink); letter-spacing: 2px; }
+.logo-heading { margin: 0; line-height: 0; }
+.logo { display: block; }
+
+/* Utility animations */
+.anim-bob { animation: cb-bob 1.6s steps(2) infinite; }
+.anim-blink { animation: cb-blink 1s steps(2) infinite; }
+.anim-pop { animation: cb-pop-in 0.4s steps(5) both; }
+.anim-shake { animation: cb-shake 120ms linear infinite; }
+.anim-float-up { animation: cb-float-up 0.8s steps(8) forwards; }
+@keyframes cb-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes cb-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes cb-pop-in { from { transform: scale(0); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } to { transform: scale(1); } }
+@keyframes cb-float-up { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-64px); } }
+@keyframes cb-twinkle { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes cb-drift { from { transform: translateX(-120%); } to { transform: translateX(100vw); } }
+@keyframes cb-confetti-fall { from { transform: translateY(-10vh) rotate(0); } to { transform: translateY(110vh) rotate(360deg); } }
+@keyframes cb-sprite-6 { from { background-position-x: 0; } to { background-position-x: calc(-48px * var(--s)); } }
+@keyframes cb-glow { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.3); } }
+
+/* Panel */
+.pixel-panel, .tile, .team-column, .result-banner { background: #0a0c22d9; box-shadow: inset 0 0 0 4px #2c3778, inset 0 0 0 8px #0a0c22; clip-path: var(--notch); }
+.pixel-panel { padding: var(--sp-lg); }
+.pixel-panel.tone-red { box-shadow: inset 0 0 0 4px var(--inter), inset 0 0 0 8px #0a0c22; }
+.pixel-panel.tone-blue { box-shadow: inset 0 0 0 4px var(--gremio), inset 0 0 0 8px #0a0c22; }
+.result-banner { padding: var(--sp-md) var(--sp-xl); }
+.form-panel { width: 100%; max-width: 480px; padding: var(--sp-xl) var(--sp-lg); }
+.form-panel small { color: var(--muted); }
+.qr-panel { display: flex; flex-direction: column; align-items: center; gap: var(--sp-md); }
+.analytics-panel { width: 100%; max-width: 1100px; }
+
+/* Button: light top-left, dark bottom-right, presses 4px down */
+.pxbtn {
+  --btn: #ffe27a; --btn-fg: var(--ink);
+  font: inherit; font-size: 16px; padding: var(--sp-md) var(--sp-lg); min-height: 56px; border: 0; border-radius: 0; cursor: pointer;
+  background: var(--btn); color: var(--btn-fg); text-transform: uppercase; touch-action: manipulation; margin-bottom: 8px;
+  box-shadow: inset 4px 4px 0 #ffffff80, inset -4px -4px 0 #00000055, 0 0 0 4px var(--ink), 0 8px 0 4px var(--ink);
+}
+.pxbtn:active:not(:disabled) { transform: translateY(4px); box-shadow: inset 4px 4px 0 #ffffff80, inset -4px -4px 0 #00000055, 0 0 0 4px var(--ink), 0 4px 0 4px var(--ink); }
+.pxbtn:focus-visible { outline: 4px solid #fff; outline-offset: 6px; }
+.pxbtn:disabled { opacity: 0.5; filter: grayscale(0.6); cursor: not-allowed; }
+.pxbtn-red { --btn: var(--inter); --btn-fg: #fff; }
+.pxbtn-blue { --btn: var(--gremio); --btn-fg: #fff; }
+.pxbtn-ghost { --btn: #2c3778; --btn-fg: var(--text); }
+.start-btn { padding-inline: var(--sp-xl); font-size: 20px; }
+
+.mute-toggle { position: fixed; top: var(--sp-sm); right: var(--sp-sm); z-index: var(--z-toast); width: 48px; height: 48px; display: grid; place-items: center; padding: 0; line-height: 0; cursor: pointer; background: #0a0c22d9; border: 4px solid #2c3778; border-radius: 0; }
+.mute-toggle:focus-visible { outline: 4px solid #fff; }
+
+/* ---- Game background (fixed scene) ---- */
+.gb { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; --pitch-h: 24vh; background: var(--night); }
+.gb-match { --pitch-h: var(--pitch-h-match); }
+.gb-results { --pitch-h: 26vh; }
+.gb-player { --pitch-h: 18vh; }
+.gb img { image-rendering: pixelated; position: absolute; }
+.gb-sky { position: absolute; inset: 0; background: url("../assets/ui/bg-sky-tile-64.png") 0 0 / calc(64px * var(--s)) calc(64px * var(--s)); image-rendering: pixelated; }
+.gb-star { position: absolute; width: calc(8px * var(--s)); height: calc(8px * var(--s)); background-size: calc(48px * var(--s)) calc(8px * var(--s)); image-rendering: pixelated; animation: cb-sprite-6 1.2s steps(6) infinite, cb-twinkle 2.4s steps(4) infinite; }
+.gb-moon { top: 6vh; right: 10%; width: calc(32px * var(--s)); height: calc(32px * var(--s)); }
+.gb-match .gb-moon { top: 22vh; right: 6%; }
+.gb-cloud { left: 0; width: calc(48px * var(--s)); height: calc(16px * var(--s)); }
+.gb-match .gb-cloud-a { top: 24vh; }
+.gb-cloud-a { top: 16vh; animation: cb-drift 120s linear infinite; }
+.gb-cloud-b { top: 30vh; animation: cb-drift 180s linear -70s infinite; }
+.gb-stadium { position: absolute; left: 0; right: 0; bottom: var(--pitch-h); height: calc(48px * var(--s)); background: url("../assets/ui/bg-stadium-strip-128x48.png") 0 100% / calc(128px * var(--s)) calc(48px * var(--s)) repeat-x; image-rendering: pixelated; animation: cb-glow 3.2s ease-in-out infinite; }
+.gb-pitch { position: absolute; left: 0; right: 0; bottom: 0; height: var(--pitch-h); background: repeating-linear-gradient(90deg, #2f8a46 0 calc(16px * var(--s)), #3fa04f calc(16px * var(--s)) calc(32px * var(--s))); }
+.gb-pitch::after { content: ""; position: absolute; inset: 0; background: linear-gradient(transparent 30%, #0a0c2266); }
+.gb-pitch-top { height: calc(20px * var(--s)); background: url("../assets/ui/bg-pitch-strip-32x24.png") 0 0 / calc(32px * var(--s)) calc(24px * var(--s)) repeat-x; image-rendering: pixelated; }
+.gb-tint { position: absolute; inset: 0; opacity: 0.28; mix-blend-mode: multiply; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gb *, .anim-bob, .anim-blink, .anim-shake { animation: none !important; }
+  .gb-star { opacity: 0.8; }
+}

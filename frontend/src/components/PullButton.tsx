@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { play } from "../lib/sfx";
 
 /** Big PUXAR button. Fires on pointerdown (no 300ms click delay); click only handles keyboard (detail === 0). */
 export function PullButton({ onPull, color }: { onPull: () => void; color: string }) {
@@ -6,6 +7,7 @@ export function PullButton({ onPull, color }: { onPull: () => void; color: strin
   const seq = useRef(0);
   const fire = () => {
     onPull();
+    play("tap");
     const n = ++seq.current;
     setPops((p) => [...p.slice(-5), n]);
   };

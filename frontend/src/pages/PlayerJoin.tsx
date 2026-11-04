@@ -2,6 +2,9 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { getPublic, join } from "../api/playerApi";
+import { Logo } from "../components/Logo";
+import { PixelButton } from "../components/PixelButton";
+import { PixelPanel } from "../components/PixelPanel";
 import { Crest } from "../components/Crest";
 import { useDeviceId } from "../hooks/useDeviceId";
 import { loadSession, saveSession } from "../hooks/useMePolling";
@@ -49,7 +52,9 @@ export default function PlayerJoin() {
 
   return (
     <main className="player-page">
-      <h1>Entrar na partida</h1>
+      <Logo scale={2} small />
+      <h1 className="pixel-title">Entrar na partida</h1>
+      <PixelPanel className="form-panel">
       <form onSubmit={submit} className="join-form">
         <label>
           Seu nome
@@ -63,7 +68,7 @@ export default function PlayerJoin() {
               role="radio"
               aria-checked={team === t}
               className="team-pick"
-              style={{ borderColor: team === t ? `var(--${t})` : "transparent" }}
+              style={{ borderColor: team === t ? `var(--${t})` : "#2c3778" }}
               onClick={() => setTeam(t)}
             >
               <Crest team={t} size={64} />
@@ -73,10 +78,11 @@ export default function PlayerJoin() {
           ))}
         </div>
         {error && <p role="alert">{error}</p>}
-        <button type="submit" className="join-submit" disabled={busy}>
+        <PixelButton type="submit" disabled={busy}>
           Entrar
-        </button>
+        </PixelButton>
       </form>
+      </PixelPanel>
     </main>
   );
 }

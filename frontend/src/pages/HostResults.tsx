@@ -6,6 +6,9 @@ import AnalyticsGrid from "../components/AnalyticsGrid";
 import { Mascot, type MascotState } from "../components/Mascot";
 import ResultBanner from "../components/ResultBanner";
 import type { AnalyticsPayload, TeamId } from "../types/api";
+import { PixelButton } from "../components/PixelButton";
+import { PixelPanel } from "../components/PixelPanel";
+import { play } from "../lib/sfx";
 import { getHostToken } from "./HostLogin";
 
 const endStates = (r: AnalyticsPayload["result"]): Record<TeamId, MascotState> =>
@@ -30,6 +33,11 @@ export default function HostResults() {
     });
   }, [routed, token, id, nav]);
 
+  const result = a?.result;
+  useEffect(() => {
+    if (result) play(result === "DRAW" ? "draw" : "win");
+  }, [result]);
+
   if (!token) return <Navigate to="/host/login" replace />;
 
   async function again() {
@@ -49,8 +57,10 @@ export default function HostResults() {
         <Mascot team="inter" state={st.inter} size={200} />
         <Mascot team="gremio" state={st.gremio} size={200} />
       </div>
-      <AnalyticsGrid a={a} />
-      <button className="join-submit start-btn" onClick={again}>Nova Partida</button>
+      <PixelPanel className="analytics-panel">
+        <AnalyticsGrid a={a} />
+      </PixelPanel>
+      <PixelButton className="start-btn" onClick={again}>Nova Partida</PixelButton>
     </main>
   );
 }
