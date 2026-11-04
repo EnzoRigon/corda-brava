@@ -160,3 +160,12 @@ Task 14: complete (commits 69fdbe4..7ecccb8, review clean).
 Minors deferred (Task 14): (a) taps in the last ~second before screen flips to end are dropped (server would 409 anyway); (b) no tests for PlayerPlay enabled gating / PlayerEnd mapping; (c) not checked on a real phone/browser (Task 18 E2E).
 
 NEXT: Task 15 (useHostSocket). BASE = HEAD after this docs commit.
+
+Task 15: implemented (commit 5635b13; report c40caee; vitest 41/41). useHostSocket(matchId, token) -> {status, snapshot, lastTick, ended(+analytics), terminal(cancelled|reset{newMatchId}), connected, authError}; reconnect only on unexpected close (500ms x2 backoff, cap 5s, reset on open); never after 1008/ended/cancelled/reset/unmount; snapshot replaces state; player_joined deduped. Host token sessionStorage["cb.hostToken"] (HOST_TOKEN_KEY, getHostToken in HostLogin.tsx). Pages HostLogin, HostCreate (duration 30–600 hardcoded, mirrors backend), HostLobby (qrcode.react QR, fullscreen overlay, TeamColumn/PlayerIcon generic initial block, Start disabled until >=1 player). Art policy holds.
+Task 15: review (sonnet-1M) — Spec ✅, Changes requested: 1 Important — lobby reload fell back to window.origin (localhost) for joinUrl -> QR unusable on phones.
+Task 15: fix round 1/5 (commit 1a152d4; report d160d7d; backend 144 pass, frontend 42/42, tsc/build/lint clean): MatchView.joinUrl (GET + WS snapshot) via shared _join_url() from PUBLIC_BASE_URL; lobby uses snapshot.joinUrl ?? router state ?? fallback; create_app(settings=None) -> get_settings() so README `uvicorn app.core.app_factory:create_app --factory` works; socket cleanup nulls onmessage/onopen; JSON.parse try/catch; QR overlay aria-modal + focus mgmt; reset follows newMatchId to /host/lobby/<id>. Verified by controller live: README uvicorn command starts; POST create + GET both return joinUrl.
+Task 15: complete (commits e893ca6..1a152d4, review clean after fix).
+Minors deferred (Task 15): (a) no tests for HostCreate / reconnect snapshot replacement / lobby status navigation; (b) duration bounds hardcoded in HostCreate.
+Ruling (dev run): added .claude/launch.json (backend uvicorn :8000 with --host 0.0.0.0, frontend vite :5173) so the user can watch the app in dev mode. For phones on LAN set PUBLIC_BASE_URL=http://<LAN-IP>:5173 (and Vite must listen on 0.0.0.0 — Task 17/18 docs).
+
+NEXT: Task 16 (HostMatch + HostResults). BASE = HEAD after this docs commit.

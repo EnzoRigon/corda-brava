@@ -1,0 +1,224 @@
+diff --git a/backend/app/api/host.py b/backend/app/api/host.py
+index c4d6c29..60172f3 100644
+--- a/backend/app/api/host.py
++++ b/backend/app/api/host.py
+@@ -38,6 +38,10 @@ BAD_PASSWORD = "Senha incorreta"
+ BAD_DURATION = "Duração fora do intervalo permitido"
+ 
+ 
++def _join_url(c: Container, match_id: str) -> str:
++    return f"{c.settings.PUBLIC_BASE_URL.rstrip('/')}/j/{match_id}"
++
++
+ def match_view(c: Container, match_id: str) -> MatchView:
+     state = c.service.get_match_view(match_id)
+     m = c.matches.get_match(match_id)
+@@ -62,11 +66,12 @@ def match_view(c: Container, match_id: str) -> MatchView:
+         ),
+         result=state.result.value.upper() if state.result else None,
+         endReason=state.end_reason.value if state.end_reason else None,
++        joinUrl=_join_url(c, m.id),
+     )
+ 
+ 
+ def _created(c: Container, m: Match) -> CreateMatchResponse:
+-    url = f"{c.settings.PUBLIC_BASE_URL.rstrip('/')}/j/{m.id}"
++    url = _join_url(c, m.id)
+     return CreateMatchResponse(
+         matchId=m.id, joinUrl=url, qrPayload=url, config=config_out(m.config)
+     )
+diff --git a/backend/app/core/app_factory.py b/backend/app/core/app_factory.py
+index a329b55..f7f0817 100644
+--- a/backend/app/core/app_factory.py
++++ b/backend/app/core/app_factory.py
+@@ -24,7 +24,7 @@ from app.api.host import router as host_router
+ from app.api.player import router as player_router
+ from app.api.ws import router as ws_router
+ from app.core.logging import configure_logging
+-from app.core.settings import Settings
++from app.core.settings import Settings, get_settings
+ from app.services.match_service import ConflictError, MatchNotFoundError
+ 
+ logger = logging.getLogger(__name__)
+@@ -41,7 +41,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+         await c.queue.close()
+ 
+ 
+-def create_app(settings: Settings) -> FastAPI:
++def create_app(settings: Settings | None = None) -> FastAPI:
+     """Build and return a configured FastAPI application.
+ 
+     Args:
+@@ -50,6 +50,7 @@ def create_app(settings: Settings) -> FastAPI:
+     Returns:
+         Fully wired FastAPI application ready to serve.
+     """
++    settings = settings or get_settings()
+     configure_logging()
+ 
+     app = FastAPI(
+diff --git a/backend/app/schemas/match.py b/backend/app/schemas/match.py
+index f1e1465..e5d2a12 100644
+--- a/backend/app/schemas/match.py
++++ b/backend/app/schemas/match.py
+@@ -69,6 +69,7 @@ class MatchView(BaseModel):
+     scores: Scores
+     result: str | None  # "INTER" | "GREMIO" | "DRAW" | null
+     endReason: str | None  # "win" | "timeout" | null
++    joinUrl: str | None = None
+ 
+ 
+ class CreateMatchResponse(BaseModel):
+diff --git a/backend/tests/api/test_host_routes.py b/backend/tests/api/test_host_routes.py
+index 24f4b02..9160105 100644
+--- a/backend/tests/api/test_host_routes.py
++++ b/backend/tests/api/test_host_routes.py
+@@ -101,6 +101,7 @@ def test_get_match_view(client, auth) -> None:
+     b = client.get(f"/api/host/matches/{mid}", headers=auth).json()
+     assert b["status"] == "LOBBY" and b["rope"] == 0 and b["result"] is None
+     assert b["roster"] == {"inter": [], "gremio": []}
++    assert b["joinUrl"] == f"http://lan:5173/j/{mid}"
+     assert client.get("/api/host/matches/NOPE", headers=auth).status_code == 404
+ 
+ 
+diff --git a/frontend/src/components/QRCode.tsx b/frontend/src/components/QRCode.tsx
+index cb52d49..9c0e0e3 100644
+--- a/frontend/src/components/QRCode.tsx
++++ b/frontend/src/components/QRCode.tsx
+@@ -1,22 +1,29 @@
+-import { useEffect, useState } from "react";
++import { useEffect, useRef, useState } from "react";
+ import { QRCodeSVG } from "qrcode.react";
+ 
+ /** Clickable QR; click opens a fullscreen overlay with a large QR + the URL. Escape or click closes. */
+ export default function QRCode({ url }: { url: string }) {
+   const [open, setOpen] = useState(false);
++  const btn = useRef<HTMLButtonElement>(null);
++  const overlay = useRef<HTMLDivElement>(null);
+   useEffect(() => {
+     if (!open) return;
++    const button = btn.current;
++    overlay.current?.focus();
+     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+     window.addEventListener("keydown", onKey);
+-    return () => window.removeEventListener("keydown", onKey);
++    return () => {
++      window.removeEventListener("keydown", onKey);
++      button?.focus();
++    };
+   }, [open]);
+   return (
+     <>
+-      <button className="qr-btn" onClick={() => setOpen(true)} aria-label="Ampliar QR code">
++      <button ref={btn} className="qr-btn" onClick={() => setOpen(true)} aria-label="Ampliar QR code">
+         <QRCodeSVG value={url} size={240} marginSize={2} />
+       </button>
+       {open && (
+-        <div className="qr-overlay" role="dialog" aria-label="QR code da partida" onClick={() => setOpen(false)}>
++        <div ref={overlay} tabIndex={-1} className="qr-overlay" role="dialog" aria-modal="true" aria-label="QR code da partida" onClick={() => setOpen(false)}>
+           <QRCodeSVG value={url} size={Math.min(window.innerWidth, window.innerHeight) * 0.7} marginSize={2} />
+           <p>{url}</p>
+           <small>Clique ou pressione Esc para fechar</small>
+diff --git a/frontend/src/hooks/useHostSocket.ts b/frontend/src/hooks/useHostSocket.ts
+index 3dc619e..84c8858 100644
+--- a/frontend/src/hooks/useHostSocket.ts
++++ b/frontend/src/hooks/useHostSocket.ts
+@@ -64,7 +64,12 @@ export function useHostSocket(matchId: string, token: string): HostSocketState {
+         setState((s) => ({ ...s, connected: true }));
+       };
+       ws.onmessage = (e) => {
+-        const m = JSON.parse(e.data as string) as HostWsMsg;
++        let m: HostWsMsg;
++        try {
++          m = JSON.parse(e.data as string) as HostWsMsg;
++        } catch {
++          return;
++        }
+         if (m.type === "ended" || m.type === "cancelled" || m.type === "reset") stopped = true;
+         setState((s) => apply(s, m));
+       };
+@@ -81,7 +86,7 @@ export function useHostSocket(matchId: string, token: string): HostSocketState {
+       stopped = true;
+       clearTimeout(timer);
+       if (ws) {
+-        ws.onclose = null;
++        ws.onclose = ws.onmessage = ws.onopen = null;
+         ws.close();
+       }
+     };
+diff --git a/frontend/src/pages/HostLobby.test.tsx b/frontend/src/pages/HostLobby.test.tsx
+new file mode 100644
+index 0000000..3056252
+--- /dev/null
++++ b/frontend/src/pages/HostLobby.test.tsx
+@@ -0,0 +1,34 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter, Route, Routes } from "react-router-dom";
++import { beforeEach, expect, it, vi } from "vitest";
++import * as sock from "../hooks/useHostSocket";
++import HostLobby from "./HostLobby";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++beforeEach(() => {
++  document.body.innerHTML = "";
++  sessionStorage.setItem("cb.hostToken", "T");
++});
++
++it("QR overlay shows the snapshot joinUrl", async () => {
++  const match = { id: "m1", status: "LOBBY", roster: { inter: [], gremio: [] }, joinUrl: "http://lan:5173/j/m1" };
++  vi.spyOn(sock, "useHostSocket").mockReturnValue({
++    status: "LOBBY", snapshot: match as never, lastTick: null, ended: null, terminal: null, connected: true, authError: false,
++  });
++  const host = document.createElement("div");
++  document.body.append(host);
++  await act(async () =>
++    createRoot(host).render(
++      createElement(
++        MemoryRouter,
++        { initialEntries: ["/host/lobby/m1"] },
++        createElement(Routes, null, createElement(Route, { path: "/host/lobby/:id", element: createElement(HostLobby) })),
++      ),
++    ),
++  );
++  expect(host.querySelector(".join-url")?.textContent).toBe("http://lan:5173/j/m1");
++  await act(async () => host.querySelector<HTMLButtonElement>(".qr-btn")!.click());
++  expect(host.querySelector(".qr-overlay")?.textContent).toContain("http://lan:5173/j/m1");
++});
+diff --git a/frontend/src/pages/HostLobby.tsx b/frontend/src/pages/HostLobby.tsx
+index d939ef3..1fc59b7 100644
+--- a/frontend/src/pages/HostLobby.tsx
++++ b/frontend/src/pages/HostLobby.tsx
+@@ -11,15 +11,16 @@ export default function HostLobby() {
+   const { id = "" } = useParams();
+   const token = getHostToken() ?? "";
+   const nav = useNavigate();
+-  // joinUrl comes from the backend create response (server PUBLIC_BASE_URL); GET has none, so a reload derives it from VITE_PUBLIC_BASE.
+-  const joinUrl = (useLocation().state as { joinUrl?: string } | null)?.joinUrl ?? `${PUBLIC_BASE}/j/${id}`;
++  // joinUrl: snapshot (server PUBLIC_BASE_URL) > create-response router state > VITE_PUBLIC_BASE fallback.
++  const routed = (useLocation().state as { joinUrl?: string } | null)?.joinUrl;
+   const { snapshot, status, terminal, authError } = useHostSocket(id, token);
++  const joinUrl = snapshot?.joinUrl ?? routed ?? `${PUBLIC_BASE}/j/${id}`;
+   const [err, setErr] = useState("");
+ 
+   if (!token || authError) return <Navigate to="/host/login" replace />;
+   if (status === "RUNNING") return <Navigate to={`/host/match/${id}`} replace />;
+   if (status === "FINISHED") return <Navigate to={`/host/results/${id}`} replace />;
+-  if (terminal) return <Navigate to="/host/create" replace />;
++  if (terminal) return <Navigate to={terminal.type === "reset" ? `/host/lobby/${terminal.newMatchId}` : "/host/create"} replace />;
+ 
+   const roster = snapshot?.roster ?? { inter: [], gremio: [] };
+   const total = roster.inter.length + roster.gremio.length;
+diff --git a/frontend/src/types/api.ts b/frontend/src/types/api.ts
+index b8b9e4e..f139106 100644
+--- a/frontend/src/types/api.ts
++++ b/frontend/src/types/api.ts
+@@ -30,6 +30,7 @@ export interface MatchView {
+   scores: Record<TeamId, TeamScore>;
+   result: MatchResult | null;
+   endReason: EndReason | null;
++  joinUrl?: string;
+ }
+ 
+ // ---- Analytics (prompt.md section 15) ----

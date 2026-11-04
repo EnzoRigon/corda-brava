@@ -29,10 +29,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 12 | Owner mascot/crest files copied verbatim + `Mascot`/`Crest` display components | ✅ reviewed |
 | 13 | `usePullBuffer` — batched taps, same-batchId retry, clamp, flush-on-hide (sendBeacon) | ✅ reviewed |
 | 14 | Player flow — Join → Wait → Play (PUXAR) → End, `/me` polling, session restore on reload | ✅ reviewed |
+| 15 | `useHostSocket` + host Login / Create / Lobby (QR, animated roster) | ✅ reviewed |
 
-**Current test count:** 144 passing (backend), 31 passing (frontend). Lint (ruff + black) clean.
+**Current test count:** 144 passing (backend), 42 passing (frontend). Lint (ruff + black) clean.
 
-**Backend (Phases A + B) complete.** **Not yet built:** rest of Phase C (Tasks 15–16: host socket + host pages); Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Backend (Phases A + B) complete.** **Not yet built:** rest of Phase C (Task 16: host match + results screens); Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 
