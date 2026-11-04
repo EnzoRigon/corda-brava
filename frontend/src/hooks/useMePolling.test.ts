@@ -72,4 +72,29 @@ describe("useMePolling", () => {
     expect(getMe.mock.calls.length).toBe(n);
     unmount = () => {};
   });
+
+  it("does not start a second request while one is pending", async () => {
+    let release!: (v: Awaited<ReturnType<typeof api.getMe>>) => void;
+    getMe.mockReset().mockReturnValue(new Promise((r) => (release = r)));
+    await tick(3000);
+    expect(getMe.mock.calls.length).toBe(1);
+    release({ screen: "wait", team: "inter", matchStatus: "LOBBY" });
+    await tick();
+    expect(getMe.mock.calls.length).toBe(2);
+  });
+
+  it("stops polling once the screen is end", async () => {
+    getMe.mockResolvedValue({ screen: "end", team: "inter", matchStatus: "FINISHED", result: "DRAW" });
+    await tick();
+    const n = getMe.mock.calls.length;
+    await tick(5000);
+    expect(loc).toBe("/j/m1/end");
+    expect(getMe.mock.calls.length).toBe(n);
+  });
+
+  it("treats 404 like 401", async () => {
+    getMe.mockRejectedValue(new ApiError(404, "x"));
+    await tick();
+    expect(loc).toBe("/j/m1");
+  });
 });

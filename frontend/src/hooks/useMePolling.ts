@@ -43,21 +43,27 @@ export function useMePolling(matchId: string, page: Screen) {
       return;
     }
     let alive = true;
+    let busy = false; // in-flight guard: no overlapping /me requests, no stale out-of-order screens
     const poll = async () => {
+      if (busy) return;
+      busy = true;
       try {
         const r = await getMe(matchId, session.playerId, session.playerToken);
         if (!alive) return;
         setMe(r);
+        if (r.screen === "end") clearInterval(id); // terminal: nothing more to learn
         if (r.screen !== page) navigate(`/j/${matchId}/${r.screen}`, { replace: true });
       } catch (e) {
-        if (alive && e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+        if (alive && e instanceof ApiError && [401, 403, 404].includes(e.status)) {
           clearSession(matchId);
           navigate(`/j/${matchId}`, { replace: true });
         } // other errors: keep polling
+      } finally {
+        busy = false;
       }
     };
-    void poll();
     const id = setInterval(() => void poll(), ME_POLL_MS);
+    void poll();
     return () => {
       alive = false;
       clearInterval(id);
