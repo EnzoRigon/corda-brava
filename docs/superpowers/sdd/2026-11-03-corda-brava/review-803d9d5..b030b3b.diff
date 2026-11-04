@@ -1,0 +1,336 @@
+diff --git a/backend/app/repositories/interfaces.py b/backend/app/repositories/interfaces.py
+index 8535962..fd9a7b8 100644
+--- a/backend/app/repositories/interfaces.py
++++ b/backend/app/repositories/interfaces.py
+@@ -43,6 +43,10 @@ class MatchRepository(Protocol):
+         """Overwrite all fields of an existing Match and return it."""
+         ...
+ 
++    def apply_tick(self, match: Match, events: list[PullEvent]) -> Match:
++        """Atomically persist new events and the match update (single transaction)."""
++        ...
++
+ 
+ class PlayerRepository(Protocol):
+     """Persistence interface for Player entities.
+diff --git a/backend/app/repositories/sqlite/match_repo.py b/backend/app/repositories/sqlite/match_repo.py
+index d9dbd6c..c8c6292 100644
+--- a/backend/app/repositories/sqlite/match_repo.py
++++ b/backend/app/repositories/sqlite/match_repo.py
+@@ -13,9 +13,10 @@ import sqlite3
+ from datetime import datetime
+ from pathlib import Path
+ 
+-from app.domain.entities import Match, MatchConfig, TeamConfig
++from app.domain.entities import Match, MatchConfig, PullEvent, TeamConfig
+ from app.domain.enums import BalanceMode, EndReason, MatchResult, MatchStatus
+ from app.repositories.sqlite.connection import get_connection, write_lock
++from app.repositories.sqlite.event_repo import _INSERT_EVENT, _event_to_params
+ 
+ _INSERT_MATCH = """
+ INSERT INTO matches (
+@@ -118,6 +119,18 @@ def _match_to_params(match: Match) -> dict[str, object]:
+     }
+ 
+ 
++def _update_params(match: Match) -> dict[str, object]:
++    return {
++        "id": match.id,
++        "status": match.status.value,
++        "rope_position": match.rope_position,
++        "started_at": _dt_to_text(match.started_at),
++        "ends_at": _dt_to_text(match.ends_at),
++        "result": match.result.value if match.result else None,
++        "end_reason": match.end_reason.value if match.end_reason else None,
++    }
++
++
+ class SQLiteMatchRepository:
+     """SQLite-backed MatchRepository implementation.
+ 
+@@ -145,16 +158,21 @@ class SQLiteMatchRepository:
+ 
+     def update_match(self, match: Match) -> Match:
+         """UPDATE the mutable runtime columns of an existing Match."""
+-        params = {
+-            "id": match.id,
+-            "status": match.status.value,
+-            "rope_position": match.rope_position,
+-            "started_at": _dt_to_text(match.started_at),
+-            "ends_at": _dt_to_text(match.ends_at),
+-            "result": match.result.value if match.result else None,
+-            "end_reason": match.end_reason.value if match.end_reason else None,
+-        }
++        params = _update_params(match)
+         with write_lock():
+             self._conn.execute(_UPDATE_MATCH, params)
+             self._conn.commit()
+         return match
++
++    def apply_tick(self, match: Match, events: list[PullEvent]) -> Match:
++        """Persist *events* and the match update in ONE transaction (all or nothing)."""
++        with write_lock():
++            try:
++                for e in events:
++                    self._conn.execute(_INSERT_EVENT, _event_to_params(e))
++                self._conn.execute(_UPDATE_MATCH, _update_params(match))
++                self._conn.commit()
++            except Exception:
++                self._conn.rollback()
++                raise
++        return match
+diff --git a/backend/app/services/consumer.py b/backend/app/services/consumer.py
+index 82f0327..9ec1560 100644
+--- a/backend/app/services/consumer.py
++++ b/backend/app/services/consumer.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import logging
+ from collections.abc import Callable
+ from datetime import UTC, datetime
+ 
+@@ -15,6 +16,7 @@ from app.repositories.interfaces import EventRepository, MatchRepository, Player
+ from app.services.registry import Broadcast
+ 
+ MAX_BATCH_MESSAGES = 500
++log = logging.getLogger(__name__)
+ 
+ 
+ def utcnow() -> datetime:
+@@ -44,7 +46,12 @@ class ConsumerLoop:
+ 
+     async def run(self) -> None:
+         """Tick until the match finishes; cancel the task to stop early."""
+-        while not await self.tick():
++        while True:
++            try:
++                if await self.tick():
++                    return
++            except Exception:  # noqa: BLE001 - keep ticking so the timer can still end the match
++                log.exception("tick failed for match %s", self.match_id)
+             await asyncio.sleep(self._settings.TICK_INTERVAL_MS / 1000)
+ 
+     async def tick(self) -> bool:
+@@ -55,23 +62,33 @@ class ConsumerLoop:
+         cfg, now = match.config, self._clock()
+ 
+         msgs = await self._queue.receive_batch(MAX_BATCH_MESSAGES, 0)
+-        foreign = [m for m in msgs if m.payload.match_id != self.match_id]
+-        if foreign:
+-            await self._queue.abandon(foreign)
+-        mine = [m for m in msgs if m.payload.match_id == self.match_id]
+-
++        # shortcut: one shared queue for all matches; per-match queues if concurrent matches matter
++        roster = self._players.list_players(self.match_id)
++        ids = {p.id for p in roster}
++        statuses: dict[str, MatchStatus | None] = {}
++        abandon, drop, mine, new_events = [], [], [], []
+         delta = {Team.INTER: 0, Team.GREMIO: 0}
+-        for m in mine:
++        seen: set[str] = set()
++        for m in msgs:
+             ev = m.payload
+-            # dedup: a redelivered/repeated batch_id has no effect (but is still acked)
+-            if self._events.event_exists(self.match_id, ev.batch_id):
+-                continue
+-            self._events.add_event(ev)
+-            delta[ev.team] += ev.count
+-        for t, n in delta.items():
+-            self._scores[t] += n
+-
+-        roster = self._players.list_players(self.match_id)
++            if ev.match_id != self.match_id:
++                if ev.match_id not in statuses:
++                    other = self._matches.get_match(ev.match_id)
++                    statuses[ev.match_id] = other.status if other else None
++                # stale (missing / not RUNNING) -> drop; else leave for its own loop
++                (abandon if statuses[ev.match_id] is MatchStatus.RUNNING else drop).append(m)
++            elif ev.player_id not in ids:
++                log.warning("dropping batch %s: unknown player %s", ev.batch_id, ev.player_id)
++                drop.append(m)
++            elif ev.batch_id in seen or self._events.event_exists(self.match_id, ev.batch_id):
++                drop.append(m)  # duplicate / redelivery: no effect, just ack
++            else:
++                seen.add(ev.batch_id)
++                new_events.append(ev)
++                delta[ev.team] += ev.count
++                mine.append(m)
++        if abandon:
++            await self._queue.abandon(abandon)
+         tick_in = TickInput(
+             pulls_inter=delta[Team.INTER],
+             pulls_gremio=delta[Team.GREMIO],
+@@ -101,9 +118,11 @@ class ConsumerLoop:
+                 state, timed_out=timed_out, rope_target=cfg.rope_target
+             )
+             match.status = MatchStatus.FINISHED
+-        self._matches.update_match(match)  # durable before ack
+-        if mine:
+-            await self._queue.ack(mine)
++        self._matches.apply_tick(match, new_events)  # events + rope in one transaction
++        for t, n in delta.items():
++            self._scores[t] += n
++        if mine or drop:
++            await self._queue.ack(mine + drop)  # only after the durable apply
+ 
+         remaining = max(0.0, (match.ends_at - now).total_seconds()) if match.ends_at else 0.0
+         await self._broadcast(
+diff --git a/backend/app/services/registry.py b/backend/app/services/registry.py
+index e192fe6..2d6a8d6 100644
+--- a/backend/app/services/registry.py
++++ b/backend/app/services/registry.py
+@@ -3,11 +3,14 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import logging
+ from collections.abc import Awaitable, Callable
+ from typing import Any
+ 
+ Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
+ 
++log = logging.getLogger(__name__)
++
+ 
+ class MatchRegistry:
+     def __init__(self) -> None:
+@@ -32,14 +35,26 @@ class MatchRegistry:
+         task = self._tasks.get(match_id)
+         return task is not None and not task.done()
+ 
++    def clear(self, match_id: str) -> None:
++        """Drop all listeners for a finished/cancelled match."""
++        self._listeners.pop(match_id, None)
++
+     def start_loop(self, match_id: str, coro: Awaitable[None]) -> None:
+-        self._tasks[match_id] = asyncio.ensure_future(coro)
++        task = asyncio.ensure_future(coro)
++        self._tasks[match_id] = task
++
++        def _done(t: asyncio.Task[None]) -> None:
++            if self._tasks.get(match_id) is t:
++                del self._tasks[match_id]
++                self.clear(match_id)
++            if not t.cancelled() and t.exception() is not None:
++                log.error("consumer loop for %s crashed", match_id, exc_info=t.exception())
++
++        task.add_done_callback(_done)
+ 
+     async def stop_loop(self, match_id: str) -> None:
+         task = self._tasks.pop(match_id, None)
+         if task is not None and not task.done():
+             task.cancel()
+-            try:
+-                await task
+-            except asyncio.CancelledError:
+-                pass
++            await asyncio.wait([task])  # unlike awaiting, never masks our own cancellation
++        self.clear(match_id)
+diff --git a/backend/tests/services/test_consumer.py b/backend/tests/services/test_consumer.py
+index 2403912..ebcba80 100644
+--- a/backend/tests/services/test_consumer.py
++++ b/backend/tests/services/test_consumer.py
+@@ -147,3 +147,80 @@ async def test_timeout_is_draw(env: Env) -> None:
+     m = env.matches.get_match(env.match.id)
+     assert (m.result, m.end_reason) == (MatchResult.DRAW, EndReason.TIMEOUT)
+     assert env.sent[-1]["endReason"] == "timeout"
++
++
++async def test_unknown_player_is_acked_and_match_keeps_ticking(env: Env) -> None:
++    loop = env.force_running()
++    await env.queue.enqueue(
++        PullEvent(
++            id="e",
++            match_id=env.match.id,
++            player_id="ghost",
++            team=Team.INTER,
++            count=1,
++            client_ts=0.0,
++            batch_id="g",
++        )
++    )
++    assert await loop.tick() is False
++    await asyncio.sleep(0.03)
++    assert await env.queue.receive_batch(10, 0) == []  # acked, not redelivered
++    env.now = T0 + timedelta(seconds=61)
++    assert await loop.tick() is True
++
++
++async def test_run_survives_a_failing_tick(env: Env) -> None:
++    loop = env.force_running()
++    real, calls = loop.tick, []
++
++    async def flaky() -> bool:
++        calls.append(1)
++        if len(calls) == 1:
++            raise RuntimeError("boom")
++        return await real()
++
++    loop.tick = flaky
++    env.now = T0 + timedelta(seconds=61)
++    await loop.run()
++    assert len(calls) == 2
++    assert env.matches.get_match(env.match.id).status is MatchStatus.FINISHED
++
++
++async def test_failed_apply_then_redelivery_applies_once(env: Env, monkeypatch) -> None:
++    from app.repositories.sqlite import match_repo
++
++    loop = env.force_running()
++    await env.pull(Team.GREMIO, 3, "r1")
++    good = match_repo._UPDATE_MATCH
++    monkeypatch.setattr(match_repo, "_UPDATE_MATCH", "UPDATE nope SET x=1")
++    with pytest.raises(Exception):
++        await loop.tick()
++    monkeypatch.setattr(match_repo, "_UPDATE_MATCH", good)
++    assert env.events.list_events(env.match.id) == []  # rolled back
++    await asyncio.sleep(0.03)  # lease expires -> redelivered
++    await loop.tick()
++    assert env.matches.get_match(env.match.id).rope_position == 3
++    assert len(env.events.list_events(env.match.id)) == 1
++    assert env.sent[-1]["scores"]["gremio"]["pulls"] == 3
++
++
++async def test_stale_finished_match_message_is_acked(env: Env) -> None:
++    loop = env.force_running()
++    other = env.svc.create_match(duration_s=60)
++    m = env.matches.get_match(other.id)
++    m.status = MatchStatus.FINISHED
++    env.matches.update_match(m)
++    await env.queue.enqueue(
++        PullEvent(
++            id="s",
++            match_id=other.id,
++            player_id="p",
++            team=Team.INTER,
++            count=1,
++            client_ts=0.0,
++            batch_id="stale",
++        )
++    )
++    await loop.tick()
++    await asyncio.sleep(0.03)
++    assert await env.queue.receive_batch(10, 0) == []
+diff --git a/backend/tests/services/test_match_service.py b/backend/tests/services/test_match_service.py
+index c31c3ea..49892bf 100644
+--- a/backend/tests/services/test_match_service.py
++++ b/backend/tests/services/test_match_service.py
+@@ -46,3 +46,16 @@ async def test_update_duration_only_in_lobby(env: Env) -> None:
+ def test_view_lobby_remaining(env: Env) -> None:
+     v = env.svc.get_match_view(env.match.id)
+     assert v.status is MatchStatus.LOBBY and v.remaining_s == 60
++
++
++async def test_listeners_cleared_when_loop_finishes(env: Env) -> None:
++    async def cb(_: dict) -> None: ...
++
++    env.registry.add_listener(env.match.id, cb)
++    env.svc.start(env.match.id)
++    env.now = T0 + __import__("datetime").timedelta(seconds=61)
++    for _ in range(50):
++        if not env.registry.is_running(env.match.id):
++            break
++        await __import__("asyncio").sleep(0.01)
++    assert env.registry._listeners.get(env.match.id) is None
