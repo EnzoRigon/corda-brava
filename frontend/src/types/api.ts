@@ -30,6 +30,7 @@ export interface MatchView {
   scores: Record<TeamId, TeamScore>;
   result: MatchResult | null;
   endReason: EndReason | null;
+  joinUrl?: string;
 }
 
 // ---- Analytics (prompt.md section 15) ----

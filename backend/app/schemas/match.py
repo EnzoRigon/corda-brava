@@ -69,6 +69,7 @@ class MatchView(BaseModel):
     scores: Scores
     result: str | None  # "INTER" | "GREMIO" | "DRAW" | null
     endReason: str | None  # "win" | "timeout" | null
+    joinUrl: str | None = None
 
 
 class CreateMatchResponse(BaseModel):

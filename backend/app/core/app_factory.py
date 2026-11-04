@@ -24,7 +24,7 @@ from app.api.host import router as host_router
 from app.api.player import router as player_router
 from app.api.ws import router as ws_router
 from app.core.logging import configure_logging
-from app.core.settings import Settings
+from app.core.settings import Settings, get_settings
 from app.services.match_service import ConflictError, MatchNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await c.queue.close()
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     """Build and return a configured FastAPI application.
 
     Args:
@@ -50,6 +50,7 @@ def create_app(settings: Settings) -> FastAPI:
     Returns:
         Fully wired FastAPI application ready to serve.
     """
+    settings = settings or get_settings()
     configure_logging()
 
     app = FastAPI(

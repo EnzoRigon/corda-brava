@@ -38,6 +38,10 @@ BAD_PASSWORD = "Senha incorreta"
 BAD_DURATION = "Duração fora do intervalo permitido"
 
 
+def _join_url(c: Container, match_id: str) -> str:
+    return f"{c.settings.PUBLIC_BASE_URL.rstrip('/')}/j/{match_id}"
+
+
 def match_view(c: Container, match_id: str) -> MatchView:
     state = c.service.get_match_view(match_id)
     m = c.matches.get_match(match_id)
@@ -62,11 +66,12 @@ def match_view(c: Container, match_id: str) -> MatchView:
         ),
         result=state.result.value.upper() if state.result else None,
         endReason=state.end_reason.value if state.end_reason else None,
+        joinUrl=_join_url(c, m.id),
     )
 
 
 def _created(c: Container, m: Match) -> CreateMatchResponse:
-    url = f"{c.settings.PUBLIC_BASE_URL.rstrip('/')}/j/{m.id}"
+    url = _join_url(c, m.id)
     return CreateMatchResponse(
         matchId=m.id, joinUrl=url, qrPayload=url, config=config_out(m.config)
     )

@@ -101,6 +101,7 @@ def test_get_match_view(client, auth) -> None:
     b = client.get(f"/api/host/matches/{mid}", headers=auth).json()
     assert b["status"] == "LOBBY" and b["rope"] == 0 and b["result"] is None
     assert b["roster"] == {"inter": [], "gremio": []}
+    assert b["joinUrl"] == f"http://lan:5173/j/{mid}"
     assert client.get("/api/host/matches/NOPE", headers=auth).status_code == 404
 
 

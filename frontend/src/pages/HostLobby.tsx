@@ -11,15 +11,16 @@ export default function HostLobby() {
   const { id = "" } = useParams();
   const token = getHostToken() ?? "";
   const nav = useNavigate();
-  // joinUrl comes from the backend create response (server PUBLIC_BASE_URL); GET has none, so a reload derives it from VITE_PUBLIC_BASE.
-  const joinUrl = (useLocation().state as { joinUrl?: string } | null)?.joinUrl ?? `${PUBLIC_BASE}/j/${id}`;
+  // joinUrl: snapshot (server PUBLIC_BASE_URL) > create-response router state > VITE_PUBLIC_BASE fallback.
+  const routed = (useLocation().state as { joinUrl?: string } | null)?.joinUrl;
   const { snapshot, status, terminal, authError } = useHostSocket(id, token);
+  const joinUrl = snapshot?.joinUrl ?? routed ?? `${PUBLIC_BASE}/j/${id}`;
   const [err, setErr] = useState("");
 
   if (!token || authError) return <Navigate to="/host/login" replace />;
   if (status === "RUNNING") return <Navigate to={`/host/match/${id}`} replace />;
   if (status === "FINISHED") return <Navigate to={`/host/results/${id}`} replace />;
-  if (terminal) return <Navigate to="/host/create" replace />;
+  if (terminal) return <Navigate to={terminal.type === "reset" ? `/host/lobby/${terminal.newMatchId}` : "/host/create"} replace />;
 
   const roster = snapshot?.roster ?? { inter: [], gremio: [] };
   const total = roster.inter.length + roster.gremio.length;

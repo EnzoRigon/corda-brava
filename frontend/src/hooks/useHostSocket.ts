@@ -64,7 +64,12 @@ export function useHostSocket(matchId: string, token: string): HostSocketState {
         setState((s) => ({ ...s, connected: true }));
       };
       ws.onmessage = (e) => {
-        const m = JSON.parse(e.data as string) as HostWsMsg;
+        let m: HostWsMsg;
+        try {
+          m = JSON.parse(e.data as string) as HostWsMsg;
+        } catch {
+          return;
+        }
         if (m.type === "ended" || m.type === "cancelled" || m.type === "reset") stopped = true;
         setState((s) => apply(s, m));
       };
@@ -81,7 +86,7 @@ export function useHostSocket(matchId: string, token: string): HostSocketState {
       stopped = true;
       clearTimeout(timer);
       if (ws) {
-        ws.onclose = null;
+        ws.onclose = ws.onmessage = ws.onopen = null;
         ws.close();
       }
     };
