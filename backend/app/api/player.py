@@ -88,7 +88,7 @@ async def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinRespons
             match_id,
             {
                 "type": "player_joined",
-                "team": player.team.value.upper(),
+                "team": player.team.value,
                 "player": {"id": player.id, "name": player.name},
             },
         )

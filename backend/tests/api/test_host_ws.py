@@ -86,7 +86,7 @@ def test_player_joined_pushed_once(client, host) -> None:
         _join(client, mid, device="d2", name="Caio", team="inter")
         assert ws.receive_json() == {
             "type": "player_joined",
-            "team": "GREMIO",
+            "team": "gremio",
             "player": {"id": r.json()["playerId"], "name": "Bia"},
         }
         assert ws.receive_json()["player"]["name"] == "Caio"

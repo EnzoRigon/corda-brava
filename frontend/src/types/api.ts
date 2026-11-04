@@ -1,8 +1,7 @@
 // Mirrors backend Pydantic schemas (camelCase JSON). Status/result UPPERCASE, endReason lowercase,
-// team ids lowercase ("inter"|"gremio"), except WS player_joined.team which is UPPERCASE.
+// team ids lowercase ("inter"|"gremio").
 
 export type TeamId = "inter" | "gremio";
-export type TeamUpper = "INTER" | "GREMIO";
 export type MatchStatus = "LOBBY" | "RUNNING" | "FINISHED";
 export type MatchResult = "INTER" | "GREMIO" | "DRAW";
 export type EndReason = "win" | "timeout";
@@ -67,7 +66,7 @@ export interface AnalyticsPayload {
 
 // ---- Host WebSocket messages (prompt.md section 14 + cancelled/reset) ----
 export interface Snapshot { type: "snapshot"; match: MatchView }
-export interface PlayerJoinedMsg { type: "player_joined"; team: TeamUpper; player: RosterPlayer }
+export interface PlayerJoinedMsg { type: "player_joined"; team: TeamId; player: RosterPlayer }
 export interface TickMsg {
   type: "tick";
   rope: number;
@@ -87,7 +86,7 @@ export interface ResetMsg { type: "reset"; newMatchId: string }
 export type HostWsMsg = Snapshot | PlayerJoinedMsg | TickMsg | EndedMsg | CancelledMsg | ResetMsg;
 
 // ---- Host HTTP ----
-export interface LoginResponse { token: string; expiresAt: string | number }
+export interface LoginResponse { token: string; expiresAt: string }
 export interface CreateMatchRequest { durationS?: number; balanceMode?: BalanceMode }
 export interface CreateMatchResponse {
   matchId: string;
