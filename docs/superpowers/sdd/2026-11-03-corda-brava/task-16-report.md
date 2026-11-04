@@ -30,3 +30,12 @@ vitest 49/49 passed (12 files); tsc clean; build OK (only chunk-size warning fro
 - Particles skipped (optional). No sound hooks.
 - Not visually verified in a browser/with a live match; PullsTimeline is mocked in the HostResults test (jsdom has no layout).
 - Leaderboard shows only pctOfTeam; pctOfAll/pullsPerSec not displayed.
+
+## Fix round 1
+Commit `844df23`.
+1. `useSmooth` stops re-arming rAF once |target - current| < 0.01 (snaps); the effect restarts on target change.
+2. `knotLeftPercent` returns 50 when target <= 0; assertion added to the existing test.
+3. HostResults: 409 from GET analytics redirects to /host/match/:id.
+4. Leaderboard also shows pctOfAll ("% do total") and pullsPerSec ("/s").
+5. Shake/scale decay when no tick arrives: skipped (not a one-liner).
+Checks: vitest 49/49, tsc clean, build OK, eslint clean.
