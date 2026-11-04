@@ -132,6 +132,19 @@ async def test_per_player_cap_limits_one_tick(env: Env) -> None:
     assert sum(e.count for e in env.events.list_events(env.match.id)) == 5
 
 
+async def test_fully_capped_batch_is_acked_but_not_recorded(env: Env) -> None:
+    env.settings.MAX_PULLS_PER_PLAYER_PER_S = 10
+    env.settings.TICK_INTERVAL_MS = 500  # cap = 5
+    loop = env.force_running()
+    await env.pull(Team.INTER, 5, "c1")
+    await env.pull(Team.INTER, 9, "c2")  # no room left -> count 0
+    await loop.tick()
+    assert [e.batch_id for e in env.events.list_events(env.match.id)] == ["c1"]
+    assert [e["count"] for e in env.sent[-1]["events"]] == [5]
+    await asyncio.sleep(0.03)  # past the lease: both must have been acked
+    assert await env.queue.receive_batch(10, 0) == []
+
+
 async def test_duplicate_batch_id_has_no_extra_effect(env: Env) -> None:
     loop = env.force_running()
     await env.pull(Team.GREMIO, 2, "dup")

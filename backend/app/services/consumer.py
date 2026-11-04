@@ -91,6 +91,9 @@ class ConsumerLoop:
                 # anti-cheat: excess over the per-tick cap is dropped, not carried over
                 room = cap - landed.get(ev.player_id, 0)
                 ev = ev.model_copy(update={"count": min(ev.count, room)})
+                if ev.count <= 0:
+                    drop.append(m)  # fully capped: ack only, no event/broadcast/count
+                    continue
                 landed[ev.player_id] = landed.get(ev.player_id, 0) + ev.count
                 new_events.append(ev)
                 delta[ev.team] += ev.count
