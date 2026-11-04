@@ -26,3 +26,6 @@ Checked login, create, lobby, running match, player play (tinted red), join, res
 
 ## Checks
 `npm test -- --run` 15 files / 57 tests pass; `tsc --noEmit`, `npm run lint`, `npm run build` clean (chunk size warning only); `npx playwright test` 1 passed. No selector changes were needed.
+
+## Follow-up: Play screen crest
+PlayerPlay no longer shows the mascot; it shows the team `<Crest size={192}>` centered above "Puxadas: N", pulsing (`cb-pulse`, `.play-crest`, re-keyed on each pull, off under reduced motion). Wait and End keep their mascots. Tests, tsc, lint and Playwright re-run green. Not re-checked visually in the browser.

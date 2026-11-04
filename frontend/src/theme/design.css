@@ -85,3 +85,8 @@
   .gb *, .anim-bob, .anim-blink, .anim-shake { animation: none !important; }
   .gb-star { opacity: 0.8; }
 }
+
+/* Player play: big team crest that pulses on each tap (re-keyed per pull) */
+.play-crest { line-height: 0; animation: cb-pulse 160ms steps(2); filter: drop-shadow(0 8px 0 #141019); }
+@keyframes cb-pulse { 0% { transform: scale(1); } 50% { transform: scale(1.12); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .play-crest { animation: none; } }
