@@ -1,0 +1,205 @@
+diff --git a/frontend/src/hooks/usePullBuffer.test.ts b/frontend/src/hooks/usePullBuffer.test.ts
+new file mode 100644
+index 0000000..09a038c
+--- /dev/null
++++ b/frontend/src/hooks/usePullBuffer.test.ts
+@@ -0,0 +1,97 @@
++import { createElement } from "react";
++import { createRoot } from "react-dom/client";
++import { act } from "react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { ApiError } from "../api/client";
++import * as api from "../api/playerApi";
++import { MAX_PULLS_PER_BATCH, usePullBuffer } from "./usePullBuffer";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++let hook: ReturnType<typeof usePullBuffer>;
++let unmount: () => void;
++const send = vi.spyOn(api, "sendPulls");
++
++function Probe() {
++  hook = usePullBuffer({ matchId: "m", playerId: "p", playerToken: "t", flushIntervalMs: 500 });
++  return null;
++}
++const tap = (n: number) => act(() => { for (let i = 0; i < n; i++) hook.tap(); });
++const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(500); });
++
++beforeEach(() => {
++  vi.useFakeTimers();
++  send.mockReset().mockResolvedValue({ accepted: 1 });
++  const root = createRoot(document.createElement("div"));
++  act(() => root.render(createElement(Probe)));
++  unmount = () => act(() => root.unmount());
++});
++afterEach(() => {
++  unmount();
++  vi.useRealTimers();
++});
++
++describe("usePullBuffer", () => {
++  it("shows taps instantly and posts one batch per interval", async () => {
++    tap(5);
++    expect(hook.displayCount).toBe(5);
++    expect(send).not.toHaveBeenCalled();
++    await tick();
++    expect(send).toHaveBeenCalledTimes(1);
++    const b = send.mock.calls[0][1];
++    expect(b.count).toBe(5);
++    expect(b.batchId).toBeTruthy();
++    await tick();
++    expect(send).toHaveBeenCalledTimes(1); // 2xx cleared it
++  });
++
++  it("resends the same batchId after failure, then uses a new id", async () => {
++    send.mockRejectedValueOnce(new Error("net"));
++    tap(3);
++    await tick();
++    tap(2);
++    await tick();
++    const [a, b] = [send.mock.calls[0][1], send.mock.calls[1][1]];
++    expect(b.batchId).toBe(a.batchId);
++    expect(b.count).toBe(3);
++    await tick();
++    const c = send.mock.calls[2][1];
++    expect(c.count).toBe(2);
++    expect(c.batchId).not.toBe(a.batchId);
++  });
++
++  it("retries on 5xx", async () => {
++    send.mockRejectedValueOnce(new ApiError(503, "x"));
++    tap(1);
++    await tick();
++    await tick();
++    expect(send).toHaveBeenCalledTimes(2);
++  });
++
++  it("clamps batches and carries the excess over", async () => {
++    tap(MAX_PULLS_PER_BATCH + 7);
++    await tick();
++    expect(send.mock.calls[0][1].count).toBe(MAX_PULLS_PER_BATCH);
++    await tick();
++    expect(send.mock.calls[1][1].count).toBe(7);
++  });
++
++  it("drops the batch on 409", async () => {
++    send.mockRejectedValueOnce(new ApiError(409, "x"));
++    tap(4);
++    await tick();
++    await tick();
++    expect(send).toHaveBeenCalledTimes(1);
++  });
++
++  it("uses sendBeacon when hidden", () => {
++    const beacon = vi.fn().mockReturnValue(true);
++    Object.defineProperty(navigator, "sendBeacon", { value: beacon, configurable: true });
++    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
++    tap(2);
++    document.dispatchEvent(new Event("visibilitychange"));
++    expect(beacon).toHaveBeenCalledTimes(1);
++    expect(beacon.mock.calls[0][0]).toBe("/api/matches/m/pulls");
++    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
++  });
++});
+diff --git a/frontend/src/hooks/usePullBuffer.ts b/frontend/src/hooks/usePullBuffer.ts
+new file mode 100644
+index 0000000..6ed3315
+--- /dev/null
++++ b/frontend/src/hooks/usePullBuffer.ts
+@@ -0,0 +1,96 @@
++import { useCallback, useEffect, useRef, useState } from "react";
++import { API_BASE, ApiError } from "../api/client";
++import { sendPulls } from "../api/playerApi";
++import type { PullRequest } from "../types/api";
++
++export const MAX_PULLS_PER_BATCH = 200;
++
++interface Opts {
++  matchId: string;
++  playerId: string;
++  playerToken: string;
++  flushIntervalMs: number;
++  enabled?: boolean;
++}
++
++export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs, enabled = true }: Opts) {
++  const [displayCount, setDisplayCount] = useState(0);
++  const pending = useRef(0);
++  // Batch sent (or beaconed) but not yet confirmed; resent with the SAME batchId until 2xx.
++  const unacked = useRef<{ count: number; batchId: string } | null>(null);
++  const inflight = useRef(false);
++  const cfg = useRef({ matchId, playerId, playerToken });
++  useEffect(() => {
++    cfg.current = { matchId, playerId, playerToken };
++  });
++
++  const takeBatch = () => {
++    if (!unacked.current && pending.current > 0) {
++      const count = Math.min(pending.current, MAX_PULLS_PER_BATCH);
++      pending.current -= count;
++      unacked.current = { count, batchId: crypto.randomUUID() };
++    }
++    return unacked.current;
++  };
++  const body = (b: { count: number; batchId: string }): PullRequest => ({
++    playerId: cfg.current.playerId,
++    playerToken: cfg.current.playerToken,
++    count: b.count,
++    batchId: b.batchId,
++    clientTs: Date.now(),
++  });
++
++  const flush = useCallback(async () => {
++    if (inflight.current) return;
++    const batch = takeBatch();
++    if (!batch) return;
++    inflight.current = true;
++    try {
++      await sendPulls(cfg.current.matchId, body(batch));
++      unacked.current = null;
++    } catch (e) {
++      // 401/403/409: bad token or match not running; retrying is futile, drop the batch.
++      if (e instanceof ApiError && [401, 403, 409].includes(e.status)) unacked.current = null;
++      // otherwise keep the batch for an idempotent resend
++    } finally {
++      inflight.current = false;
++    }
++  }, []);
++
++  const flushOnHide = useCallback(() => {
++    const batch = takeBatch(); // stays unacked: a beacon cannot confirm success
++    if (!batch) return;
++    const url = `${API_BASE}/api/matches/${cfg.current.matchId}/pulls`;
++    const json = JSON.stringify(body(batch));
++    const ok =
++      typeof navigator.sendBeacon === "function" &&
++      navigator.sendBeacon(url, new Blob([json], { type: "application/json" }));
++    if (!ok)
++      void fetch(url, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: json,
++        keepalive: true,
++      }).catch(() => {});
++  }, []);
++
++  useEffect(() => {
++    if (!enabled) return;
++    const id = setInterval(() => void flush(), flushIntervalMs);
++    const onVis = () => document.visibilityState === "hidden" && flushOnHide();
++    document.addEventListener("visibilitychange", onVis);
++    window.addEventListener("pagehide", flushOnHide);
++    return () => {
++      clearInterval(id);
++      document.removeEventListener("visibilitychange", onVis);
++      window.removeEventListener("pagehide", flushOnHide);
++    };
++  }, [enabled, flushIntervalMs, flush, flushOnHide]);
++
++  const tap = useCallback(() => {
++    pending.current += 1;
++    setDisplayCount((c) => c + 1);
++  }, []);
++
++  return { displayCount, tap };
++}

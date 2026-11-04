@@ -1,0 +1,144 @@
+diff --git a/frontend/src/hooks/usePullBuffer.test.ts b/frontend/src/hooks/usePullBuffer.test.ts
+index 09a038c..5b52b50 100644
+--- a/frontend/src/hooks/usePullBuffer.test.ts
++++ b/frontend/src/hooks/usePullBuffer.test.ts
+@@ -29,6 +29,7 @@ beforeEach(() => {
+ afterEach(() => {
+   unmount();
+   vi.useRealTimers();
++  Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+ });
+ 
+ describe("usePullBuffer", () => {
+@@ -84,14 +85,73 @@ describe("usePullBuffer", () => {
+     expect(send).toHaveBeenCalledTimes(1);
+   });
+ 
+-  it("uses sendBeacon when hidden", () => {
++  const hide = () => {
++    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
++    document.dispatchEvent(new Event("visibilitychange"));
++  };
++  const mockBeacon = () => {
+     const beacon = vi.fn().mockReturnValue(true);
+     Object.defineProperty(navigator, "sendBeacon", { value: beacon, configurable: true });
+-    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
++    return beacon;
++  };
++
++  it("uses sendBeacon when hidden, with a JSON blob body", async () => {
++    const beacon = mockBeacon();
+     tap(2);
+-    document.dispatchEvent(new Event("visibilitychange"));
++    hide();
+     expect(beacon).toHaveBeenCalledTimes(1);
+     expect(beacon.mock.calls[0][0]).toBe("/api/matches/m/pulls");
+-    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
++    const blob = beacon.mock.calls[0][1] as Blob;
++    expect(blob.type).toBe("application/json");
++    const body = JSON.parse(await blob.text());
++    expect(Object.keys(body).sort()).toEqual(["batchId", "clientTs", "count", "playerId", "playerToken"]);
++    expect(body.count).toBe(2);
++  });
++
++  it("resends the beaconed batchId on the next interval", async () => {
++    const beacon = mockBeacon();
++    tap(2);
++    hide();
++    const sent = JSON.parse(await (beacon.mock.calls[0][1] as Blob).text());
++    await tick();
++    expect(send.mock.calls[0][1].batchId).toBe(sent.batchId);
++    expect(send.mock.calls[0][1].count).toBe(2);
++  });
++
++  it("does not start a second POST while one is in flight", async () => {
++    let done!: () => void;
++    send.mockReturnValueOnce(new Promise((r) => { done = () => r({ accepted: 1 }); }));
++    tap(1);
++    await tick();
++    tap(1);
++    await tick();
++    expect(send).toHaveBeenCalledTimes(1);
++    done();
++    await tick();
++    expect(send).toHaveBeenCalledTimes(2);
++    expect(send.mock.calls[1][1].count).toBe(1);
++  });
++
++  it("drops a 422 batch and sends later taps as a new batch", async () => {
++    send.mockRejectedValueOnce(new ApiError(422, "x"));
++    tap(3);
++    await tick();
++    tap(2);
++    await tick();
++    expect(send).toHaveBeenCalledTimes(2);
++    expect(send.mock.calls[1][1].count).toBe(2);
++    expect(send.mock.calls[1][1].batchId).not.toBe(send.mock.calls[0][1].batchId);
++  });
++
++  it("stops sending after 409 but keeps counting taps", async () => {
++    send.mockRejectedValueOnce(new ApiError(409, "x"));
++    tap(4);
++    await tick();
++    tap(2);
++    await tick();
++    hide();
++    await tick();
++    expect(send).toHaveBeenCalledTimes(1);
++    expect(hook.displayCount).toBe(6);
+   });
+ });
+diff --git a/frontend/src/hooks/usePullBuffer.ts b/frontend/src/hooks/usePullBuffer.ts
+index 6ed3315..ae5b1f6 100644
+--- a/frontend/src/hooks/usePullBuffer.ts
++++ b/frontend/src/hooks/usePullBuffer.ts
+@@ -19,10 +19,14 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
+   // Batch sent (or beaconed) but not yet confirmed; resent with the SAME batchId until 2xx.
+   const unacked = useRef<{ count: number; batchId: string } | null>(null);
+   const inflight = useRef(false);
++  const stopped = useRef(false); // set after 401/403/409: no more POSTs until reconfigured
+   const cfg = useRef({ matchId, playerId, playerToken });
+   useEffect(() => {
+     cfg.current = { matchId, playerId, playerToken };
+   });
++  useEffect(() => {
++    stopped.current = false;
++  }, [enabled, matchId, playerId, playerToken]);
+ 
+   const takeBatch = () => {
+     if (!unacked.current && pending.current > 0) {
+@@ -41,7 +45,7 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
+   });
+ 
+   const flush = useCallback(async () => {
+-    if (inflight.current) return;
++    if (inflight.current || stopped.current) return;
+     const batch = takeBatch();
+     if (!batch) return;
+     inflight.current = true;
+@@ -49,15 +53,22 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
+       await sendPulls(cfg.current.matchId, body(batch));
+       unacked.current = null;
+     } catch (e) {
+-      // 401/403/409: bad token or match not running; retrying is futile, drop the batch.
+-      if (e instanceof ApiError && [401, 403, 409].includes(e.status)) unacked.current = null;
+-      // otherwise keep the batch for an idempotent resend
++      // 4xx (except 408/429) is a poison batch: drop it. 401/403/409 (bad token / match not running) also stop sending.
++      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) {
++        unacked.current = null;
++        if ([401, 403, 409].includes(e.status)) {
++          stopped.current = true;
++          pending.current = 0;
++        }
++      }
++      // otherwise (network, 5xx, 408, 429) keep the batch for an idempotent resend
+     } finally {
+       inflight.current = false;
+     }
+   }, []);
+ 
+   const flushOnHide = useCallback(() => {
++    if (stopped.current) return;
+     const batch = takeBatch(); // stays unacked: a beacon cannot confirm success
+     if (!batch) return;
+     const url = `${API_BASE}/api/matches/${cfg.current.matchId}/pulls`;

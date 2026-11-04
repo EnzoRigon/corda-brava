@@ -144,3 +144,11 @@ Task 12: complete (commits 679137c..7c253ad, review clean).
 Minors deferred (Task 12): (a) only 4 of 12 state/team combos tested; (b) fixed square width/height may distort non-square sprites/crests — check in layout (Tasks 14/16), use object-fit: contain if needed.
 
 NEXT: Task 13 (usePullBuffer). BASE = HEAD after this docs commit.
+
+Task 13: implemented (commit 8627ee8; report d881a7f; vitest 13/13). usePullBuffer({matchId, playerId, playerToken, flushIntervalMs, enabled?}) -> {displayCount, tap}. CONTROLLER RULING (idempotency): a failed batch (network/5xx/408/429) is kept in `unacked` and resent with the SAME batchId — never merged into a new batchId (a lost response would double-count); server dedups by batchId. One in-flight request; batches clamped to MAX_PULLS_PER_BATCH=200 (matches backend), excess stays pending. Flush on visibilitychange(hidden)/pagehide via sendBeacon(Blob application/json) with fetch keepalive fallback; beacon never clears `unacked`.
+Task 13: review (sonnet-1M) — Spec ✅, Quality Approved; double-count/race/stale-closure traces clean.
+Task 13: polish round (commit f08a3bd; report 6bd3cf0; vitest 17/17, tsc/build/lint clean): any 4xx except 408/429 drops the batch (no poison-batch blocking); after 401/403/409 a `stopped` ref zeroes pending and halts flush/flushOnHide until enabled/ids/token change (taps still bump displayCount); stronger tests (beacon Blob body/type, beacon-then-interval same batchId, tap during inflight, 422 drop, stop after 409). Verified by controller: vitest 17/17, tsc clean.
+Task 13: complete (commits 64cbc62..f08a3bd, review clean).
+Minors deferred (Task 13): (a) no test for stop-flag reset on id/token change or 401/403 stop paths; (b) beacon to a cross-origin API_BASE would need CORS preflight — fine same-origin/proxied (note for Task 17 Docker).
+
+NEXT: Task 14 (player pages). BASE = HEAD after this docs commit.

@@ -27,10 +27,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 10 | Host routes + host WebSocket (snapshot/tick/ended), lifespan wiring, login rate limit + tests | ✅ reviewed |
 | 11 | Frontend skeleton — Vite + React + TS, routing, theme, pixel font, typed API client, `useDeviceId` | ✅ reviewed |
 | 12 | Owner mascot/crest files copied verbatim + `Mascot`/`Crest` display components | ✅ reviewed |
+| 13 | `usePullBuffer` — batched taps, same-batchId retry, clamp, flush-on-hide (sendBeacon) | ✅ reviewed |
 
-**Current test count:** 144 passing (backend), 7 passing (frontend). Lint (ruff + black) clean.
+**Current test count:** 144 passing (backend), 17 passing (frontend). Lint (ruff + black) clean.
 
-**Backend (Phases A + B) complete.** **Not yet built:** rest of Phase C (Tasks 13–16: pull buffer, player + host pages); Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Backend (Phases A + B) complete.** **Not yet built:** rest of Phase C (Tasks 14–16: player + host pages); Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 
