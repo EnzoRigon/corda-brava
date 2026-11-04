@@ -20,8 +20,8 @@ Trust the ledger + `git log` over memory. A task with a `Task N: complete` line 
 - **On `main`** (single branch, no worktree). All work merged and committed.
 - **Phase A complete: Tasks 1–5 reviewed** (backend skeleton, pure game rules, SQLite repos, broker-shaped EventQueue, host auth). 78 backend tests passing at end of Phase A.
 - **Phase B complete: Tasks 6–10 reviewed** (MatchService, ConsumerLoop, MatchRegistry, analytics, player API, pull ingest + /me, host routes + host WebSocket). 144 tests passing; ruff + black clean.
-- **Phase C: Task 11 complete** (frontend skeleton in `frontend/`; `npm test -- --run`, `npx tsc --noEmit`, `npm run build`, `npm run lint`).
-- **Next task: Task 12 — Mascot/Crest components** (copy owner-authored image files only). Read the ledger's FRONTEND NOTES, task-10-report.md and task-11-report.md. See the ledger for the downstream interfaces and deferred minors.
+- **Phase C: Tasks 11–12 complete** (frontend skeleton in `frontend/`; `npm test -- --run`, `npx tsc --noEmit`, `npm run build`, `npm run lint`).
+- **Next task: Task 13 — usePullBuffer.** Read the ledger's FRONTEND NOTES and task-9/11/12 reports. See the ledger for the downstream interfaces and deferred minors.
 
 ## How to build each task (the loop)
 

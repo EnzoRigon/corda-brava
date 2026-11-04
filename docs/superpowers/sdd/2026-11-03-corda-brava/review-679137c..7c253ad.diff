@@ -1,0 +1,90 @@
+diff --git a/frontend/src/components/Crest.tsx b/frontend/src/components/Crest.tsx
+new file mode 100644
+index 0000000..a57d109
+--- /dev/null
++++ b/frontend/src/components/Crest.tsx
+@@ -0,0 +1,13 @@
++import type { TeamId } from "../types/api";
++import inter from "../assets/crests/inter.png";
++import gremio from "../assets/crests/gremio.png";
++
++const CRESTS: Record<TeamId, { src: string; alt: string }> = {
++  inter: { src: inter, alt: "Escudo do Inter" },
++  gremio: { src: gremio, alt: "Escudo do Grêmio" },
++};
++
++export function Crest({ team, size = 48, className }: { team: TeamId; size?: number; className?: string }) {
++  const { src, alt } = CRESTS[team];
++  return <img src={src} alt={alt} width={size} height={size} className={className} style={{ imageRendering: "pixelated" }} />;
++}
+diff --git a/frontend/src/components/Mascot.test.tsx b/frontend/src/components/Mascot.test.tsx
+new file mode 100644
+index 0000000..05afbd5
+--- /dev/null
++++ b/frontend/src/components/Mascot.test.tsx
+@@ -0,0 +1,23 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vitest";
++import { Crest } from "./Crest";
++import { Mascot } from "./Mascot";
++
++const src = (el: React.ReactElement) => /src="([^"]*)"/.exec(renderToStaticMarkup(el))![1];
++
++describe("Mascot/Crest", () => {
++  it("inter straining uses saci_pull", () => {
++    expect(src(<Mascot team="inter" state="straining" />)).toContain("saci_pull");
++  });
++  it("gremio happy uses mosq_happy and is mirrored", () => {
++    const html = renderToStaticMarkup(<Mascot team="gremio" state="happy" />);
++    expect(html).toContain("mosq_happy");
++    expect(html).toContain("scaleX(-1)");
++  });
++  it("inter losing uses saci_defeat", () => {
++    expect(src(<Mascot team="inter" state="losing" />)).toContain("saci_defeat");
++  });
++  it("crest renders gremio png", () => {
++    expect(src(<Crest team="gremio" />)).toContain("gremio");
++  });
++});
+diff --git a/frontend/src/components/Mascot.tsx b/frontend/src/components/Mascot.tsx
+new file mode 100644
+index 0000000..6870530
+--- /dev/null
++++ b/frontend/src/components/Mascot.tsx
+@@ -0,0 +1,36 @@
++import type { TeamId } from "../types/api";
++import saciMaster from "../assets/mascots/saci_master.png";
++import saciPull from "../assets/mascots/saci_pull.gif";
++import saciHappy from "../assets/mascots/saci_happy.gif";
++import saciDefeat from "../assets/mascots/saci_defeat.gif";
++import saciCry from "../assets/mascots/saci_cry.gif";
++import mosqMaster from "../assets/mascots/mosq_master.png";
++import mosqPull from "../assets/mascots/mosq_pull.gif";
++import mosqHappy from "../assets/mascots/mosq_happy.gif";
++import mosqDefeat from "../assets/mascots/mosq_defeat.gif";
++import mosqCry from "../assets/mascots/mosq_cry.gif";
++
++export type MascotState = "idle" | "straining" | "winning" | "losing" | "happy" | "crying";
++
++const SPRITES: Record<TeamId, Record<MascotState, string>> = {
++  inter: { idle: saciMaster, straining: saciPull, winning: saciHappy, happy: saciHappy, losing: saciDefeat, crying: saciCry },
++  gremio: { idle: mosqMaster, straining: mosqPull, winning: mosqHappy, happy: mosqHappy, losing: mosqDefeat, crying: mosqCry },
++};
++
++const ALT: Record<TeamId, string> = { inter: "Saci (Inter)", gremio: "Mosqueteiro (Grêmio)" };
++
++interface Props { team: TeamId; state: MascotState; size?: number; className?: string }
++
++export function Mascot({ team, state, size = 128, className }: Props) {
++  return (
++    <img
++      src={SPRITES[team][state]}
++      alt={ALT[team]}
++      width={size}
++      height={size}
++      className={className}
++      // Sprites face right; Grêmio is mirrored (as in the owner prototype) to face center.
++      style={{ imageRendering: "pixelated", transform: team === "gremio" ? "scaleX(-1)" : undefined }}
++    />
++  );
++}

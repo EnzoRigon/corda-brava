@@ -137,3 +137,10 @@ Minors deferred (Task 11): (a) getDeviceId returns a new id per call when storag
 FRONTEND NOTES update: team ids lowercase everywhere ("inter"|"gremio"); status/result UPPERCASE; endReason lowercase.
 
 NEXT: Task 12 (Mascot/Crest components — copy owner-authored asset files only). BASE = HEAD after this docs commit.
+
+Task 12: implemented (commit 7c253ad; report 199713a; frontend vitest 7/7, tsc/build/lint clean). 12 owner files copied verbatim (cmp-verified) to frontend/src/assets/mascots/ (saci_*/mosq_* master.png, pull/happy/defeat/cry.gif) and frontend/src/assets/crests/ (inter.png, gremio.png). <Mascot team state size=128 className /> with state idle->master, straining->pull, winning|happy->happy, losing->defeat, crying->cry; gremio mirrored scaleX(-1) (sprites face right, same as owner prototype); <Crest team size=48 className />. image-rendering: pixelated; PT-BR alt. Draw result -> caller passes idle.
+Task 12: review (sonnet-1M) — Spec ✅, Quality Approved. Art policy holds (no drawing code), byte-identical copies re-verified.
+Task 12: complete (commits 679137c..7c253ad, review clean).
+Minors deferred (Task 12): (a) only 4 of 12 state/team combos tested; (b) fixed square width/height may distort non-square sprites/crests — check in layout (Tasks 14/16), use object-fit: contain if needed.
+
+NEXT: Task 13 (usePullBuffer). BASE = HEAD after this docs commit.
