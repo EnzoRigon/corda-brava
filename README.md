@@ -25,10 +25,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 8 | Player API — public info + join (one-per-device idempotent), player token, DI container + tests | ✅ reviewed |
 | 9 | Pull ingest (202, batchId dedup, clamp) + `/me` player screen + tests | ✅ reviewed |
 | 10 | Host routes + host WebSocket (snapshot/tick/ended), lifespan wiring, login rate limit + tests | ✅ reviewed |
+| 11 | Frontend skeleton — Vite + React + TS, routing, theme, pixel font, typed API client, `useDeviceId` | ✅ reviewed |
 
-**Current test count:** 144 passing (backend). Lint (ruff + black) clean.
+**Current test count:** 144 passing (backend), 3 passing (frontend). Lint (ruff + black) clean.
 
-**Backend (Phases A + B) complete.** **Not yet built:** Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Backend (Phases A + B) complete.** **Not yet built:** rest of Phase C (Tasks 12–16: sprites, pull buffer, player + host pages); Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 

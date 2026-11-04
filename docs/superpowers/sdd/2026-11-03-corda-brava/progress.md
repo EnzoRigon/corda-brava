@@ -127,3 +127,13 @@ FRONTEND NOTES (Tasks 11–16): status and result always UPPERCASE; endReason lo
 
 ## PHASE B COMPLETE (Tasks 6–10). Backend: 144 tests passing.
 NEXT: Phase C — Task 11 (frontend scaffold: theme tokens, types, api client, useDeviceId). BASE = HEAD after this docs commit.
+
+## PHASE C — Frontend
+Task 11: implemented (commit c1ecbdf; report dfa9579). frontend/: React 18 + Vite + TS strict, react-router-dom 6, vitest+jsdom, ESLint 10 flat config (eslint.config.js — deviation from .eslintrc), separate vitest.config.ts. src/types/api.ts mirrors backend JSON; src/api/client.ts (ApiError{status, detail PT-BR}), hostApi.ts, playerApi.ts; useDeviceId (getDeviceId exported, localStorage try/catch). Env: VITE_API_BASE / VITE_WS_BASE default "" (same-origin), VITE_PUBLIC_BASE default location.origin. Dev proxy /api (+ws) -> :8000. Theme tokens + CSS vars (inter #E5050F, gremio #0D80BF/#4FA9DC), Press Start 2P woff2 from @fontsource copied into src/assets/fonts/ with OFL-LICENSE.txt. Routes: /host/login|create|lobby/:id|match/:id|results/:id, /j/:id, /j/:id/wait|play|end (match /me screen values), / -> /host/login; placeholders live in App.tsx.
+Task 11: review (sonnet-1M) — Spec ✅, Quality Approved; all types verified field-by-field against backend.
+Task 11: polish round (commit 4ff58fc; report 6c2e433): WS player_joined.team now lowercase (backend api/player.py + test) so team ids are lowercase EVERYWHERE; TeamUpper removed; LoginResponse.expiresAt: string (ISO-8601); client returns undefined on 204/empty body. Verified by controller: backend 144 pass; frontend vitest 3/3, tsc clean.
+Task 11: complete (commits 7a88784..4ff58fc, review clean).
+Minors deferred (Task 11): (a) getDeviceId returns a new id per call when storage is blocked (hook stable per mount); (b) vitest.config.ts duplicates vite config; (c) placeholders inline in App.tsx (later tasks split pages).
+FRONTEND NOTES update: team ids lowercase everywhere ("inter"|"gremio"); status/result UPPERCASE; endReason lowercase.
+
+NEXT: Task 12 (Mascot/Crest components — copy owner-authored asset files only). BASE = HEAD after this docs commit.

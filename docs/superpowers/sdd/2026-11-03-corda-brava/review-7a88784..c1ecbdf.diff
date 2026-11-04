@@ -1,0 +1,674 @@
+diff --git a/frontend/eslint.config.js b/frontend/eslint.config.js
+new file mode 100644
+index 0000000..601d7cd
+--- /dev/null
++++ b/frontend/eslint.config.js
+@@ -0,0 +1,11 @@
++import js from "@eslint/js";
++import tseslint from "typescript-eslint";
++import reactHooks from "eslint-plugin-react-hooks";
++
++export default tseslint.config(js.configs.recommended, ...tseslint.configs.recommended, {
++  plugins: { "react-hooks": reactHooks },
++  rules: {
++    "react-hooks/rules-of-hooks": "error",
++    "react-hooks/exhaustive-deps": "warn",
++  },
++});
+diff --git a/frontend/index.html b/frontend/index.html
+new file mode 100644
+index 0000000..c695930
+--- /dev/null
++++ b/frontend/index.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html lang="pt-BR">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
++    <title>Corda Brava</title>
++  </head>
++  <body>
++    <div id="root"></div>
++    <script type="module" src="/src/main.tsx"></script>
++  </body>
++</html>
+diff --git a/frontend/package.json b/frontend/package.json
+new file mode 100644
+index 0000000..df66732
+--- /dev/null
++++ b/frontend/package.json
+@@ -0,0 +1,32 @@
++{
++  "name": "corda-brava-frontend",
++  "private": "true",
++  "version": "0.1.0",
++  "type": "module",
++  "scripts": {
++    "dev": "vite",
++    "build": "tsc --noEmit && vite build",
++    "preview": "vite preview",
++    "test": "vitest",
++    "lint": "eslint src"
++  },
++  "dependencies": {
++    "react": "^18.3.1",
++    "react-dom": "^18.3.1",
++    "react-router-dom": "^6.30.6"
++  },
++  "devDependencies": {
++    "@eslint/js": "^10.0.1",
++    "@fontsource/press-start-2p": "^5.3.0",
++    "@types/react": "^18.3.31",
++    "@types/react-dom": "^18.3.7",
++    "@vitejs/plugin-react": "^6.2.1",
++    "eslint": "^10.14.0",
++    "eslint-plugin-react-hooks": "^7.1.1",
++    "jsdom": "^29.1.1",
++    "typescript": "^6.0.3",
++    "typescript-eslint": "^8.72.1",
++    "vite": "^8.3.5",
++    "vitest": "^5.1.0"
++  }
++}
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+new file mode 100644
+index 0000000..6cd299b
+--- /dev/null
++++ b/frontend/src/App.tsx
+@@ -0,0 +1,30 @@
++import { Navigate, Route, Routes, useParams } from "react-router-dom";
++
++// Placeholder pages; Tasks 12-16 replace each with the real screen.
++function Placeholder({ title, hasId = false }: { title: string; hasId?: boolean }) {
++  const { id } = useParams();
++  return (
++    <main style={{ padding: "var(--sp-lg)" }}>
++      <h1>{title}</h1>
++      {hasId && <p>Partida: {id}</p>}
++    </main>
++  );
++}
++
++export default function App() {
++  return (
++    <Routes>
++      <Route path="/" element={<Navigate to="/host/login" replace />} />
++      <Route path="/host/login" element={<Placeholder title="Entrar como host" />} />
++      <Route path="/host/create" element={<Placeholder title="Nova partida" />} />
++      <Route path="/host/lobby/:id" element={<Placeholder title="Sala de espera" hasId />} />
++      <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
++      <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
++      <Route path="/j/:id" element={<Placeholder title="Entrar na partida" hasId />} />
++      <Route path="/j/:id/wait" element={<Placeholder title="Aguardando o host iniciar" hasId />} />
++      <Route path="/j/:id/play" element={<Placeholder title="PUXAR!" hasId />} />
++      <Route path="/j/:id/end" element={<Placeholder title="Obrigado por jogar!" hasId />} />
++      <Route path="*" element={<Navigate to="/" replace />} />
++    </Routes>
++  );
++}
+diff --git a/frontend/src/api/client.ts b/frontend/src/api/client.ts
+new file mode 100644
+index 0000000..5991e2f
+--- /dev/null
++++ b/frontend/src/api/client.ts
+@@ -0,0 +1,47 @@
++// Empty defaults = same-origin relative paths (single-port Docker/nginx serving; Vite dev proxies /api).
++export const API_BASE: string = import.meta.env.VITE_API_BASE ?? "";
++export const WS_BASE: string = import.meta.env.VITE_WS_BASE ?? "";
++/** Origin for join/QR links; set to the LAN IP / public host so phones can reach it. */
++export const PUBLIC_BASE: string =
++  import.meta.env.VITE_PUBLIC_BASE || globalThis.location?.origin || "";
++
++export class ApiError extends Error {
++  status: number;
++  constructor(status: number, detail: string) {
++    super(detail);
++    this.name = "ApiError";
++    this.status = status;
++  }
++}
++
++export async function request<T>(
++  path: string,
++  opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string> } = {},
++): Promise<T> {
++  const qs = opts.query ? "?" + new URLSearchParams(opts.query).toString() : "";
++  const headers: Record<string, string> = {};
++  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
++  if (opts.token) headers["Authorization"] = `Bearer ${opts.token}`;
++  const res = await fetch(`${API_BASE}${path}${qs}`, {
++    method: opts.method ?? (opts.body !== undefined ? "POST" : "GET"),
++    headers,
++    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
++  });
++  if (!res.ok) {
++    let detail = "Erro inesperado. Tente novamente.";
++    try {
++      const j = await res.json();
++      if (typeof j?.detail === "string") detail = j.detail;
++    } catch {
++      // non-JSON error body: keep the generic message
++    }
++    throw new ApiError(res.status, detail);
++  }
++  return (await res.json()) as T;
++}
++
++/** Builds a ws(s):// URL; uses VITE_WS_BASE if set, else derives from the page origin. */
++export function wsUrl(path: string, query?: Record<string, string>): string {
++  const base = WS_BASE || globalThis.location.origin.replace(/^http/, "ws");
++  return `${base}${path}${query ? "?" + new URLSearchParams(query).toString() : ""}`;
++}
+diff --git a/frontend/src/api/hostApi.ts b/frontend/src/api/hostApi.ts
+new file mode 100644
+index 0000000..a259294
+--- /dev/null
++++ b/frontend/src/api/hostApi.ts
+@@ -0,0 +1,29 @@
++import { request, wsUrl } from "./client";
++import type {
++  AnalyticsPayload,
++  ConfigOut,
++  CreateMatchRequest,
++  CreateMatchResponse,
++  LoginResponse,
++  MatchView,
++} from "../types/api";
++
++const m = (id: string) => `/api/host/matches/${id}`;
++
++export const login = (password: string) =>
++  request<LoginResponse>("/api/host/login", { body: { password } });
++export const createMatch = (token: string, body: CreateMatchRequest = {}) =>
++  request<CreateMatchResponse>("/api/host/matches", { body, token });
++export const getMatch = (token: string, id: string) => request<MatchView>(m(id), { token });
++export const patchMatch = (token: string, id: string, durationS: number) =>
++  request<ConfigOut>(m(id), { method: "PATCH", body: { durationS }, token });
++export const startMatch = (token: string, id: string) =>
++  request<MatchView>(`${m(id)}/start`, { method: "POST", body: {}, token });
++/** Returns the NEW match (reset creates a fresh lobby). */
++export const resetMatch = (token: string, id: string) =>
++  request<CreateMatchResponse>(`${m(id)}/reset`, { method: "POST", body: {}, token });
++export const cancelMatch = (token: string, id: string) =>
++  request<MatchView>(`${m(id)}/cancel`, { method: "POST", body: {}, token });
++export const getAnalytics = (token: string, id: string) =>
++  request<AnalyticsPayload>(`${m(id)}/analytics`, { token });
++export const hostWsUrl = (id: string, token: string) => wsUrl(`${m(id)}/ws`, { token });
+diff --git a/frontend/src/api/playerApi.ts b/frontend/src/api/playerApi.ts
+new file mode 100644
+index 0000000..beee887
+--- /dev/null
++++ b/frontend/src/api/playerApi.ts
+@@ -0,0 +1,19 @@
++import { request } from "./client";
++import type {
++  JoinRequest,
++  JoinResponse,
++  MeResponse,
++  PublicMatch,
++  PullAccepted,
++  PullRequest,
++} from "../types/api";
++
++const m = (id: string) => `/api/matches/${id}`;
++
++export const getPublic = (id: string) => request<PublicMatch>(`${m(id)}/public`);
++export const join = (id: string, body: JoinRequest) =>
++  request<JoinResponse>(`${m(id)}/players`, { body });
++export const sendPulls = (id: string, body: PullRequest) =>
++  request<PullAccepted>(`${m(id)}/pulls`, { body });
++export const getMe = (id: string, playerId: string, token: string) =>
++  request<MeResponse>(`${m(id)}/me`, { query: { playerId, token } });
+diff --git a/frontend/src/assets/fonts/OFL-LICENSE.txt b/frontend/src/assets/fonts/OFL-LICENSE.txt
+new file mode 100644
+index 0000000..5891186
+--- /dev/null
++++ b/frontend/src/assets/fonts/OFL-LICENSE.txt
+@@ -0,0 +1,93 @@
++Copyright 2012 The Press Start 2P Project Authors (cody@zone38.net), with Reserved Font Name "Press Start 2P"
++
++This Font Software is licensed under the SIL Open Font License, Version 1.1.
++This license is copied below, and is also available with a FAQ at:
++http://scripts.sil.org/OFL
++
++
++-----------------------------------------------------------
++SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
++-----------------------------------------------------------
++
++PREAMBLE
++The goals of the Open Font License (OFL) are to stimulate worldwide
++development of collaborative font projects, to support the font creation
++efforts of academic and linguistic communities, and to provide a free and
++open framework in which fonts may be shared and improved in partnership
++with others.
++
++The OFL allows the licensed fonts to be used, studied, modified and
++redistributed freely as long as they are not sold by themselves. The
++fonts, including any derivative works, can be bundled, embedded,
++redistributed and/or sold with any software provided that any reserved
++names are not used by derivative works. The fonts and derivatives,
++however, cannot be released under any other type of license. The
++requirement for fonts to remain under this license does not apply
++to any document created using the fonts or their derivatives.
++
++DEFINITIONS
++"Font Software" refers to the set of files released by the Copyright
++Holder(s) under this license and clearly marked as such. This may
++include source files, build scripts and documentation.
++
++"Reserved Font Name" refers to any names specified as such after the
++copyright statement(s).
++
++"Original Version" refers to the collection of Font Software components as
++distributed by the Copyright Holder(s).
++
++"Modified Version" refers to any derivative made by adding to, deleting,
++or substituting -- in part or in whole -- any of the components of the
++Original Version, by changing formats or by porting the Font Software to a
++new environment.
++
++"Author" refers to any designer, engineer, programmer, technical
++writer or other person who contributed to the Font Software.
++
++PERMISSION & CONDITIONS
++Permission is hereby granted, free of charge, to any person obtaining
++a copy of the Font Software, to use, study, copy, merge, embed, modify,
++redistribute, and sell modified and unmodified copies of the Font
++Software, subject to the following conditions:
++
++1) Neither the Font Software nor any of its individual components,
++in Original or Modified Versions, may be sold by itself.
++
++2) Original or Modified Versions of the Font Software may be bundled,
++redistributed and/or sold with any software, provided that each copy
++contains the above copyright notice and this license. These can be
++included either as stand-alone text files, human-readable headers or
++in the appropriate machine-readable metadata fields within text or
++binary files as long as those fields can be easily viewed by the user.
++
++3) No Modified Version of the Font Software may use the Reserved Font
++Name(s) unless explicit written permission is granted by the corresponding
++Copyright Holder. This restriction only applies to the primary font name as
++presented to the users.
++
++4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
++Software shall not be used to promote, endorse or advertise any
++Modified Version, except to acknowledge the contribution(s) of the
++Copyright Holder(s) and the Author(s) or with their explicit written
++permission.
++
++5) The Font Software, modified or unmodified, in part or in whole,
++must be distributed entirely under this license, and must not be
++distributed under any other license. The requirement for fonts to
++remain under this license does not apply to any document created
++using the Font Software.
++
++TERMINATION
++This license becomes null and void if any of the above conditions are
++not met.
++
++DISCLAIMER
++THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
++EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
++MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
++OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
++COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
++INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
++DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
++OTHER DEALINGS IN THE FONT SOFTWARE.
+diff --git a/frontend/src/hooks/useDeviceId.test.ts b/frontend/src/hooks/useDeviceId.test.ts
+new file mode 100644
+index 0000000..5776064
+--- /dev/null
++++ b/frontend/src/hooks/useDeviceId.test.ts
+@@ -0,0 +1,21 @@
++import { beforeEach, describe, expect, it } from "vitest";
++import { getDeviceId } from "./useDeviceId";
++
++describe("getDeviceId", () => {
++  beforeEach(() => localStorage.clear());
++
++  it("returns a UUID and persists it in localStorage", () => {
++    const id = getDeviceId();
++    expect(id).toMatch(/^[0-9a-f-]{36}$/);
++    expect(localStorage.getItem("cb.deviceId")).toBe(id);
++  });
++
++  it("is stable across calls", () => {
++    expect(getDeviceId()).toBe(getDeviceId());
++  });
++
++  it("reuses an id already stored", () => {
++    localStorage.setItem("cb.deviceId", "abc");
++    expect(getDeviceId()).toBe("abc");
++  });
++});
+diff --git a/frontend/src/hooks/useDeviceId.ts b/frontend/src/hooks/useDeviceId.ts
+new file mode 100644
+index 0000000..acb902e
+--- /dev/null
++++ b/frontend/src/hooks/useDeviceId.ts
+@@ -0,0 +1,29 @@
++import { useState } from "react";
++
++const KEY = "cb.deviceId";
++
++function newId(): string {
++  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
++  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
++    const r = (Math.random() * 16) | 0;
++    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
++  });
++}
++
++/** Stable per-device id kept in localStorage (falls back to a per-call id if storage is blocked). */
++export function getDeviceId(): string {
++  try {
++    const existing = localStorage.getItem(KEY);
++    if (existing) return existing;
++    const id = newId();
++    localStorage.setItem(KEY, id);
++    return id;
++  } catch {
++    return newId();
++  }
++}
++
++export function useDeviceId(): string {
++  const [id] = useState(getDeviceId);
++  return id;
++}
+diff --git a/frontend/src/main.tsx b/frontend/src/main.tsx
+new file mode 100644
+index 0000000..c24b64e
+--- /dev/null
++++ b/frontend/src/main.tsx
+@@ -0,0 +1,13 @@
++import { StrictMode } from "react";
++import { createRoot } from "react-dom/client";
++import { BrowserRouter } from "react-router-dom";
++import App from "./App";
++import "./theme/global.css";
++
++createRoot(document.getElementById("root")!).render(
++  <StrictMode>
++    <BrowserRouter>
++      <App />
++    </BrowserRouter>
++  </StrictMode>,
++);
+diff --git a/frontend/src/theme/global.css b/frontend/src/theme/global.css
+new file mode 100644
+index 0000000..1ca7ba3
+--- /dev/null
++++ b/frontend/src/theme/global.css
+@@ -0,0 +1,54 @@
++@font-face {
++  font-family: "Press Start 2P";
++  src: url("../assets/fonts/PressStart2P.woff2") format("woff2");
++  font-display: swap;
++}
++
++:root {
++  --inter: #e5050f;
++  --inter-dark: #7a0309;
++  --gremio: #0d80bf;
++  --gremio-light: #4fa9dc;
++  --gremio-black: #000;
++  --bg: #12121c;
++  --panel: #1d1d2e;
++  --text: #f4f4f4;
++  --muted: #9a9ab0;
++  --sp-xs: 4px;
++  --sp-sm: 8px;
++  --sp-md: 16px;
++  --sp-lg: 24px;
++  --sp-xl: 40px;
++  --z-scene: 10;
++  --z-hud: 20;
++  --z-overlay: 100;
++  --z-toast: 200;
++  --font-pixel: "Press Start 2P", monospace;
++  --safe-top: env(safe-area-inset-top);
++  --safe-bottom: env(safe-area-inset-bottom);
++}
++
++* {
++  box-sizing: border-box;
++}
++
++html,
++body,
++#root {
++  height: 100%;
++  margin: 0;
++}
++
++body {
++  background: var(--bg);
++  color: var(--text);
++  font-family: var(--font-pixel);
++  font-size: 12px;
++  line-height: 1.6;
++  overflow-x: hidden;
++}
++
++img,
++canvas {
++  image-rendering: pixelated;
++}
+diff --git a/frontend/src/theme/tokens.ts b/frontend/src/theme/tokens.ts
+new file mode 100644
+index 0000000..07ddfe4
+--- /dev/null
++++ b/frontend/src/theme/tokens.ts
+@@ -0,0 +1,20 @@
++// Single source for theme tokens. global.css mirrors the colors as CSS variables.
++export const teams = {
++  inter: { id: "inter", name: "Inter", primary: "#E5050F", secondary: "#FFFFFF", dark: "#7A0309" },
++  gremio: { id: "gremio", name: "Grêmio", primary: "#0D80BF", secondary: "#000000", light: "#4FA9DC" },
++} as const;
++
++export const colors = {
++  bg: "#12121c",
++  panel: "#1d1d2e",
++  text: "#f4f4f4",
++  muted: "#9a9ab0",
++} as const;
++
++export const spacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 40 } as const; // px, 4px pixel grid
++
++export const zIndex = { base: 0, scene: 10, hud: 20, overlay: 100, toast: 200 } as const;
++
++export const fonts = { pixel: '"Press Start 2P", monospace' } as const;
++
++export const motion = { fast: "80ms", base: "200ms", slow: "500ms" } as const;
+diff --git a/frontend/src/types/api.ts b/frontend/src/types/api.ts
+new file mode 100644
+index 0000000..dfada5d
+--- /dev/null
++++ b/frontend/src/types/api.ts
+@@ -0,0 +1,121 @@
++// Mirrors backend Pydantic schemas (camelCase JSON). Status/result UPPERCASE, endReason lowercase,
++// team ids lowercase ("inter"|"gremio"), except WS player_joined.team which is UPPERCASE.
++
++export type TeamId = "inter" | "gremio";
++export type TeamUpper = "INTER" | "GREMIO";
++export type MatchStatus = "LOBBY" | "RUNNING" | "FINISHED";
++export type MatchResult = "INTER" | "GREMIO" | "DRAW";
++export type EndReason = "win" | "timeout";
++export type BalanceMode = "raw" | "normalized";
++
++export interface TeamColors { primary: string; secondary: string }
++export interface TeamConfig { id: TeamId; name: string; colors: TeamColors }
++export interface ConfigOut {
++  durationS: number;
++  ropeTarget: number;
++  balanceMode: BalanceMode;
++  teams: Record<TeamId, TeamConfig>;
++}
++
++export interface RosterPlayer { id: string; name: string }
++export interface TeamScore { pulls: number }
++
++/** Host view of a match; also the `match` body of the WS snapshot. */
++export interface MatchView {
++  id: string;
++  status: MatchStatus;
++  config: ConfigOut;
++  roster: Record<TeamId, RosterPlayer[]>;
++  rope: number;
++  remainingS: number;
++  scores: Record<TeamId, TeamScore>;
++  result: MatchResult | null;
++  endReason: EndReason | null;
++}
++
++// ---- Analytics (prompt.md section 15) ----
++export interface PlayerStats {
++  playerId: string;
++  name: string;
++  team: TeamId;
++  pulls: number;
++  pctOfTeam: number;
++  pctOfAll: number;
++  pullsPerSec: number;
++}
++export interface TeamStats {
++  players: number;
++  totalPulls: number;
++  avgPullsPerPlayer: number;
++  bestPlayer: PlayerStats | null;
++  worstPlayer: PlayerStats | null;
++}
++export interface AnalyticsPayload {
++  result: MatchResult | null;
++  endReason: EndReason | null;
++  durationS: number;
++  totalPlayers: number;
++  playersPerTeam: Record<TeamId, number>;
++  totalPulls: { overall: number; inter: number; gremio: number };
++  pullsPerSecond: { t: number; inter: number; gremio: number }[];
++  peak: { value: number; t: number };
++  finalRope: number;
++  teams: Record<TeamId, TeamStats>;
++  players: PlayerStats[];
++  leaderboard: PlayerStats[];
++}
++
++// ---- Host WebSocket messages (prompt.md section 14 + cancelled/reset) ----
++export interface Snapshot { type: "snapshot"; match: MatchView }
++export interface PlayerJoinedMsg { type: "player_joined"; team: TeamUpper; player: RosterPlayer }
++export interface TickMsg {
++  type: "tick";
++  rope: number;
++  remainingS: number;
++  delta: Record<TeamId, number>;
++  scores: Record<TeamId, TeamScore>;
++}
++export interface EndedMsg {
++  type: "ended";
++  result: MatchResult;
++  endReason: EndReason;
++  finalRope: number;
++  analytics: AnalyticsPayload;
++}
++export interface CancelledMsg { type: "cancelled" }
++export interface ResetMsg { type: "reset"; newMatchId: string }
++export type HostWsMsg = Snapshot | PlayerJoinedMsg | TickMsg | EndedMsg | CancelledMsg | ResetMsg;
++
++// ---- Host HTTP ----
++export interface LoginResponse { token: string; expiresAt: string | number }
++export interface CreateMatchRequest { durationS?: number; balanceMode?: BalanceMode }
++export interface CreateMatchResponse {
++  matchId: string;
++  joinUrl: string;
++  qrPayload: string;
++  config: ConfigOut;
++}
++
++// ---- Player HTTP ----
++export interface PublicMatch {
++  status: MatchStatus;
++  teams: Record<TeamId, { name: string; colors: TeamColors }>;
++  counts: Record<TeamId, number>;
++  durationS: number;
++}
++export interface JoinRequest { name: string; team: TeamId; deviceId: string }
++export interface JoinResponse { playerId: string; playerToken: string; team: TeamId }
++export interface PullRequest {
++  playerId: string;
++  playerToken: string;
++  count: number;
++  clientTs: number;
++  batchId: string;
++}
++export interface PullAccepted { accepted: number }
++export interface MeResponse {
++  screen: "wait" | "play" | "end";
++  team: TeamId;
++  matchStatus: MatchStatus;
++  result?: MatchResult;
++}
+diff --git a/frontend/src/vite-env.d.ts b/frontend/src/vite-env.d.ts
+new file mode 100644
+index 0000000..d3607fa
+--- /dev/null
++++ b/frontend/src/vite-env.d.ts
+@@ -0,0 +1,6 @@
++/// <reference types="vite/client" />
++interface ImportMetaEnv {
++  readonly VITE_API_BASE?: string;
++  readonly VITE_WS_BASE?: string;
++  readonly VITE_PUBLIC_BASE?: string;
++}
+diff --git a/frontend/tsconfig.json b/frontend/tsconfig.json
+new file mode 100644
+index 0000000..0774f1c
+--- /dev/null
++++ b/frontend/tsconfig.json
+@@ -0,0 +1,16 @@
++{
++  "compilerOptions": {
++    "target": "ES2020",
++    "lib": ["ES2020", "DOM", "DOM.Iterable"],
++    "module": "ESNext",
++    "moduleResolution": "bundler",
++    "jsx": "react-jsx",
++    "strict": true,
++    "noUnusedLocals": true,
++    "noUnusedParameters": true,
++    "skipLibCheck": true,
++    "noEmit": true,
++    "types": ["vite/client"]
++  },
++  "include": ["src", "vite.config.ts", "vitest.config.ts"]
++}
+diff --git a/frontend/vite.config.ts b/frontend/vite.config.ts
+new file mode 100644
+index 0000000..147e21b
+--- /dev/null
++++ b/frontend/vite.config.ts
+@@ -0,0 +1,10 @@
++import { defineConfig } from "vite";
++import react from "@vitejs/plugin-react";
++
++export default defineConfig({
++  plugins: [react()],
++  server: {
++    host: true,
++    proxy: { "/api": { target: "http://localhost:8000", ws: true } },
++  },
++});
+diff --git a/frontend/vitest.config.ts b/frontend/vitest.config.ts
+new file mode 100644
+index 0000000..8634280
+--- /dev/null
++++ b/frontend/vitest.config.ts
+@@ -0,0 +1,3 @@
++import { defineConfig } from "vitest/config";
++
++export default defineConfig({ test: { environment: "jsdom" } });
