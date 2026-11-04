@@ -1,0 +1,21 @@
+# Use: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  backend:
+    command: uvicorn app.core.app_factory:create_app --factory --host 0.0.0.0 --port 8000 --reload --proxy-headers --forwarded-allow-ips=*
+    volumes:
+      - ./backend/app:/app/app
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports: !override
+      - "5173:5173"

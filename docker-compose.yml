@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      HOST_PASSWORD: ${HOST_PASSWORD:?set HOST_PASSWORD in .env}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      DATABASE_URL: sqlite:////data/corda_brava.db
+    volumes:
+      - corda_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_PUBLIC_BASE: ${VITE_PUBLIC_BASE:-}
+    ports:
+      - "${PUBLIC_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  corda_data:

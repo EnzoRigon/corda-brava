@@ -17,3 +17,6 @@ build/
 
 # Claude Code worktree scratch (git-ignored working dirs)
 .claude/worktrees/
+
+# Secrets
+.env
