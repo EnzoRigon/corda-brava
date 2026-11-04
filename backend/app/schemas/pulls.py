@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, StringConstraints
 
-from app.domain.enums import MatchStatus, Team
+from app.domain.enums import Team
 
 Id = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 
@@ -26,5 +26,5 @@ class PullAccepted(BaseModel):
 class MeResponse(BaseModel):
     screen: Literal["wait", "play", "end"]
     team: Team
-    matchStatus: MatchStatus  # noqa: N815
+    matchStatus: str  # noqa: N815 - LOBBY|RUNNING|FINISHED
     result: Literal["INTER", "GREMIO", "DRAW"] | None = None

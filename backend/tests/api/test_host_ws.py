@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,8 @@ def test_tick_then_ended_with_analytics(client, host) -> None:
         }
         client.post(f"/api/matches/{mid}/pulls", json=body)
         ticks, ended = [], None
-        for _ in range(500):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
             msg = ws.receive_json()
             if msg["type"] == "tick":
                 ticks.append(msg)

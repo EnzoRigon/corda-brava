@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import time
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.auth import require_host
 from app.api.deps import Container, ContainerDep
@@ -29,6 +31,9 @@ from app.services.match_service import MatchNotFoundError
 router = APIRouter(prefix="/api/host", tags=["host"])
 protected = APIRouter(prefix="/api/host", tags=["host"], dependencies=[Depends(require_host)])
 
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_S = 60.0
+TOO_MANY = "Muitas tentativas. Tente novamente em instantes"
 BAD_PASSWORD = "Senha incorreta"
 BAD_DURATION = "Duração fora do intervalo permitido"
 
@@ -68,8 +73,15 @@ def _created(c: Container, m: Match) -> CreateMatchResponse:
 
 
 @router.post("/login", response_model=HostLoginResponse)
-def login(body: HostLoginRequest, c: ContainerDep) -> HostLoginResponse:
+def login(body: HostLoginRequest, c: ContainerDep, request: Request) -> HostLoginResponse:
+    ip = request.client.host if request.client else "?"
+    now = time.monotonic()
+    recent = [t for t in c.login_failures.get(ip, []) if now - t < LOGIN_WINDOW_S]
+    if len(recent) >= LOGIN_MAX_FAILURES:
+        c.login_failures[ip] = recent
+        raise HTTPException(status_code=429, detail=TOO_MANY)
     if not check_password(body.password, c.settings):
+        c.login_failures[ip] = [*recent, now]
         raise HTTPException(status_code=401, detail=BAD_PASSWORD)
     token, expires_at = issue_host_token(c.settings)
     return HostLoginResponse(token=token, expiresAt=expires_at)

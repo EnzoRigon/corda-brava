@@ -25,6 +25,6 @@ def require_host(
     if scheme.lower() != "bearer" or not verify_host_token(token, c.settings):
         raise HTTPException(
             status_code=401,
-            detail="Invalid or missing host token",
+            detail="Token de host inválido ou ausente",
             headers={"WWW-Authenticate": "Bearer"},
         )

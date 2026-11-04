@@ -114,14 +114,14 @@ def test_me_screens(ctx) -> None:
     client, c, mid, j = ctx
     q = {"playerId": j["playerId"], "token": j["playerToken"]}
     get = lambda: client.get(f"/api/matches/{mid}/me", params=q)  # noqa: E731
-    assert get().json() == {"screen": "wait", "team": "gremio", "matchStatus": "lobby"}
+    assert get().json() == {"screen": "wait", "team": "gremio", "matchStatus": "LOBBY"}
     _set(c, mid, MatchStatus.RUNNING)
     assert get().json()["screen"] == "play"
     _set(c, mid, MatchStatus.FINISHED, MatchResult.GREMIO)
     assert get().json() == {
         "screen": "end",
         "team": "gremio",
-        "matchStatus": "finished",
+        "matchStatus": "FINISHED",
         "result": "GREMIO",
     }
 

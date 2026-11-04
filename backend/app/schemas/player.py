@@ -6,7 +6,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, StringConstraints
 
-from app.domain.enums import MatchStatus, Team
+from app.domain.enums import Team
 
 NAME_MAX = 24
 
@@ -46,7 +46,7 @@ class Counts(BaseModel):
 
 
 class PublicMatch(BaseModel):
-    status: MatchStatus
+    status: str  # LOBBY|RUNNING|FINISHED
     teams: PublicTeams
     counts: Counts
     durationS: int  # noqa: N815

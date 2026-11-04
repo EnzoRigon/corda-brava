@@ -47,7 +47,7 @@ def public_info(match_id: str, c: ContainerDep) -> PublicMatch:
     m = _match(c, match_id)
     players = c.players.list_players(match_id)
     return PublicMatch(
-        status=m.status,
+        status=m.status.value.upper(),
         teams=PublicTeams(inter=_team(m.config.inter), gremio=_team(m.config.gremio)),
         counts=Counts(
             inter=sum(p.team is Team.INTER for p in players),
@@ -81,7 +81,7 @@ async def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinRespons
         except UniqueConstraintError:  # lost a race with the same device
             existing = c.players.get_player_by_device(match_id, body.deviceId)
             if existing is None:
-                raise HTTPException(status_code=500, detail="join failed") from None
+                raise HTTPException(status_code=500, detail="Falha ao entrar na partida") from None
             player = existing
     if is_new:
         await c.registry.broadcast(
@@ -148,5 +148,8 @@ def me(match_id: str, playerId: str, token: str, c: ContainerDep) -> MeResponse:
     m = _match(c, match_id)
     result = m.result.value.upper() if m.status is MatchStatus.FINISHED and m.result else None
     return MeResponse(
-        screen=_SCREEN[m.status], team=player.team, matchStatus=m.status, result=result
+        screen=_SCREEN[m.status],
+        team=player.team,
+        matchStatus=m.status.value.upper(),
+        result=result,
     )

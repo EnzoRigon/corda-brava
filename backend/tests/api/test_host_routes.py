@@ -45,6 +45,22 @@ def test_login_wrong_password_401_ptbr(client) -> None:
     assert r.status_code == 401 and r.json()["detail"] == "Senha incorreta"
 
 
+def test_login_rate_limited_after_failures(client) -> None:
+    for _ in range(5):
+        assert client.post("/api/host/login", json={"password": "x"}).status_code == 401
+    r = client.post("/api/host/login", json={"password": PASSWORD})
+    assert r.status_code == 429 and "tentativas" in r.json()["detail"]
+
+
+def test_login_window_expires(client, monkeypatch) -> None:
+    import app.api.host as host
+
+    for _ in range(5):
+        client.post("/api/host/login", json={"password": "x"})
+    monkeypatch.setattr(host, "LOGIN_WINDOW_S", 0.0)
+    assert client.post("/api/host/login", json={"password": PASSWORD}).status_code == 200
+
+
 def test_login_returns_token_and_expiry(client) -> None:
     r = client.post("/api/host/login", json={"password": PASSWORD})
     assert r.status_code == 200 and r.json()["token"] and r.json()["expiresAt"]

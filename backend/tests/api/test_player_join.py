@@ -101,7 +101,7 @@ def test_public_shows_counts(ctx) -> None:
     _join(client, match.id, device="b", team="inter")
     _join(client, match.id, device="c", team="gremio")
     body = client.get(f"/api/matches/{match.id}/public").json()
-    assert body["status"] == "lobby" and body["durationS"] == 60
+    assert body["status"] == "LOBBY" and body["durationS"] == 60
     assert body["counts"] == {"inter": 2, "gremio": 1}
     assert body["teams"]["inter"] == {
         "name": "Inter",

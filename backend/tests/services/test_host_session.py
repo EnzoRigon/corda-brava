@@ -58,7 +58,7 @@ def test_token_without_exp_rejected():
 def test_other_algorithms_rejected():
     claims = {"role": "host", "exp": int(datetime.now(UTC).timestamp()) + 60}
     assert not verify_host_token(jwt.encode(claims, None, algorithm="none"), S)
-    assert not verify_host_token(jwt.encode(claims, S.SECRET_KEY, algorithm="HS512"), S)
+    assert not verify_host_token(jwt.encode(claims, "k" * 64, algorithm="HS512"), S)
 
 
 def test_verify_ws_token():

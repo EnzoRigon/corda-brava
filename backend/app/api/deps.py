@@ -33,6 +33,8 @@ class Container:
     service: MatchService
     # shortcut: per-process batchId->expiry (monotonic); swap for Redis when scaled out
     seen_batches: dict[str, float] = field(default_factory=dict)
+    # shortcut: per-process failed-login timestamps by client IP; use a shared store when scaled out
+    login_failures: dict[str, list[float]] = field(default_factory=dict)
 
 
 def _db_path(settings: Settings) -> str:
