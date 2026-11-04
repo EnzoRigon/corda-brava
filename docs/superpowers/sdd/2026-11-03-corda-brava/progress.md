@@ -201,3 +201,6 @@ Minors deferred (Task 18): (a) tsconfig include omits e2e/ + playwright.config.t
 
 ## POLISH PHASE (owner request 2026-11-04)
 Plan: docs/superpowers/plans/2026-11-04-corda-brava-polish.md (P1–P7). P1 (assets) and P2 (backend tick events) run in parallel — disjoint files.
+
+P2: implemented (commit 1f386fb; report d368556; backend 146 pass, ruff/black clean; frontend tsc + vitest 49). WS tick gains events: [{playerId, name, team(lowercase), count}] for applied batches only, last 20 per tick; names from the roster the consumer already loads. TickEvent type in frontend/src/types/api.ts. Controller reviewed the 12-line diff directly (small, test-covered) — approved.
+P2: complete (commits 2ad2a3a..1f386fb).
