@@ -21,7 +21,8 @@ Trust the ledger + `git log` over memory. A task with a `Task N: complete` line 
 - **Phase A complete: Tasks 1–5 reviewed** (backend skeleton, pure game rules, SQLite repos, broker-shaped EventQueue, host auth). 78 backend tests passing at end of Phase A.
 - **Phase B complete: Tasks 6–10 reviewed** (MatchService, ConsumerLoop, MatchRegistry, analytics, player API, pull ingest + /me, host routes + host WebSocket). 144 tests passing; ruff + black clean.
 - **Phase C complete: Tasks 11–16 reviewed** (frontend skeleton in `frontend/`; `npm test -- --run`, `npx tsc --noEmit`, `npm run build`, `npm run lint`).
-- **Next task: Task 17 — Docker compose single-port stack + .env.example** (start of Phase D). Read the ledger's Phase C notes.
+- **Phase D: Task 17 complete** (Docker files; runtime unverified — no Docker on the Windows dev machine).
+- **Next task: Task 18 — E2E + run README** (last task).
 - **Dev run:** `.claude/launch.json` starts backend (:8000) and Vite (:5173); host password default `Inter>Gremio`. See the ledger for the downstream interfaces and deferred minors.
 
 ## How to build each task (the loop)

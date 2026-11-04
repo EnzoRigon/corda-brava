@@ -31,10 +31,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 14 | Player flow — Join → Wait → Play (PUXAR) → End, `/me` polling, session restore on reload | ✅ reviewed |
 | 15 | `useHostSocket` + host Login / Create / Lobby (QR, animated roster) | ✅ reviewed |
 | 16 | Host match rope scene (interpolated knot, timer) + results with analytics charts | ✅ reviewed |
+| 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
 
 **Current test count:** 144 passing (backend), 49 passing (frontend). Lint (ruff + black) clean.
 
-**Backend (Phases A + B) and frontend (Phase C) complete.** **Not yet built:** Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Backend (Phases A + B) and frontend (Phase C) complete.** **Not yet built:** Task 18 (end-to-end test + run README). Docker files exist but `docker compose up` has not been run yet. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 

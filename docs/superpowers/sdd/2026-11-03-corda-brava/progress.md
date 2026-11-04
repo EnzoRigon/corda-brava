@@ -181,3 +181,12 @@ Minors deferred (Task 16): (a) shake/scale intensity doesn't decay if ticks stop
 
 ## PHASE C COMPLETE (Tasks 11–16). Backend 144 tests, frontend 49 tests.
 NEXT: Phase D — Task 17 (Docker compose single-port stack + .env.example). BASE = HEAD after this docs commit. Carry: Vite must listen on 0.0.0.0 for LAN, PUBLIC_BASE_URL docs, beacon same-origin (Task 13 minor b).
+
+## PHASE D
+Ruling (no Docker): Docker is NOT installed on this Windows machine. Task 17 files were written and statically verified only (YAML parse, nginx read-through, env coverage, backend/frontend suites). `docker compose config/build/up` and the brief's curl smoke were NOT run — must be run on a machine with Docker (Task 18 notes / owner).
+Task 17: implemented (commit ac04463; report a5eaeb2). backend/Dockerfile (python:3.11-slim multi-stage, pip install . into /opt/venv, non-root uid 10001, /data volume, DATABASE_URL=sqlite:////data/corda_brava.db, single uvicorn worker `--proxy-headers --forwarded-allow-ips=*`, HEALTHCHECK via urllib), frontend/Dockerfile (dev stage + node build + nginx:alpine), frontend/nginx.conf (SPA fallback, /api/ + /health proxy to backend:8000 with WS Upgrade map, 3600s read timeout, X-Forwarded-For/Proto), docker-compose.yml (only nginx published ${PUBLIC_PORT:-80}:80, volume corda_data, restart unless-stopped, depends_on service_healthy, HOST_PASSWORD/SECRET_KEY ${VAR:?}), docker-compose.dev.yml (reload, bind mounts, Vite 0.0.0.0:5173, VITE_PROXY_TARGET=http://backend:8000, ports !override needs Compose >=2.24), .env.example (all Settings + VITE_* + LAN hint), .env gitignored; vite.config proxy target overridable via VITE_PROXY_TARGET. Login rate limiter now sees real client IP via proxy headers (backend unpublished, so trusting * is safe).
+Task 17: review (sonnet-1M, read-as-docker) — Spec ✅, Quality Approved, minors only.
+Task 17: complete (commits e7b3061..ac04463, review clean; Docker runtime UNVERIFIED).
+Minors deferred (Task 17): (a) `ports: !override` requires Compose 2.24+; (b) Vite file watching over Windows bind mounts may need polling; (c) VITE_PUBLIC_BASE is build-time fallback only (server PUBLIC_BASE_URL wins).
+
+NEXT: Task 18 (E2E + run README). BASE = HEAD after this docs commit.
