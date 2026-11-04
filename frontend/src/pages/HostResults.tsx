@@ -25,6 +25,7 @@ export default function HostResults() {
     if (routed || !token) return;
     getAnalytics(token, id).then(setFetched, (x) => {
       if (x instanceof ApiError && x.status === 401) nav("/host/login", { replace: true });
+      else if (x instanceof ApiError && x.status === 409) nav(`/host/match/${id}`, { replace: true }); // not finished yet
       else setErr("Não foi possível carregar os resultados.");
     });
   }, [routed, token, id, nav]);

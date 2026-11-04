@@ -9,6 +9,7 @@ it("knotLeftPercent maps rope to 10..90%", () => {
   expect(knotLeftPercent(-100, 100)).toBeCloseTo(10);
   expect(knotLeftPercent(100, 100)).toBeCloseTo(90);
   expect(knotLeftPercent(0, 100)).toBeCloseTo(50);
+  expect(knotLeftPercent(10, 0)).toBe(50);
 });
 
 it.each([[-100, "10%"], [100, "90%"], [0, "50%"]])("renders knot for rope=%i", async (rope, left) => {

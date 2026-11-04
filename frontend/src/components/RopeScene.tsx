@@ -3,7 +3,7 @@ import type { TeamId } from "../types/api";
 import { Mascot, type MascotState } from "./Mascot";
 import Rope from "./Rope";
 
-export const knotLeftPercent = (rope: number, target: number): number => 50 + (rope / target) * 40;
+export const knotLeftPercent = (rope: number, target: number): number => (target > 0 ? 50 + (rope / target) * 40 : 50);
 
 /** Eases toward `target` each animation frame; `enabled=false` snaps. */
 function useSmooth(target: number, enabled: boolean): number {
@@ -13,9 +13,10 @@ function useSmooth(target: number, enabled: boolean): number {
     if (!enabled) return;
     let id = requestAnimationFrame(function step() {
       ref.current += (target - ref.current) * 0.15;
-      if (Math.abs(target - ref.current) < 0.05) ref.current = target;
+      const done = Math.abs(target - ref.current) < 0.01;
+      if (done) ref.current = target;
       setV(ref.current);
-      id = requestAnimationFrame(step);
+      if (!done) id = requestAnimationFrame(step); // converged: stop re-arming until target changes
     });
     return () => cancelAnimationFrame(id);
   }, [target, enabled]);

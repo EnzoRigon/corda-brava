@@ -37,7 +37,7 @@ export default function AnalyticsGrid({ a }: { a: AnalyticsPayload }) {
       <ol className="leaderboard">
         {a.leaderboard.map((p) => (
           <li key={p.playerId} className={p.team}>
-            {p.name} — {p.pulls} puxadas ({p.pctOfTeam}% do time)
+            {p.name} — {p.pulls} puxadas ({p.pctOfTeam}% do time, {p.pctOfAll}% do total, {p.pullsPerSec}/s)
           </li>
         ))}
       </ol>
