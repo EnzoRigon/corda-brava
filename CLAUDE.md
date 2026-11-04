@@ -19,8 +19,8 @@ Trust the ledger + `git log` over memory. A task with a `Task N: complete` line 
 
 - **On `main`** (single branch, no worktree). All work merged and committed.
 - **Phase A complete: Tasks 1–5 reviewed** (backend skeleton, pure game rules, SQLite repos, broker-shaped EventQueue, host auth). 78 backend tests passing at end of Phase A.
-- **Phase B: Task 6 complete** (MatchService, ConsumerLoop, MatchRegistry). 91 tests passing; ruff + black clean.
-- **Next task: Task 7 — analytics service.** See the ledger for the downstream interfaces and deferred minors.
+- **Phase B: Tasks 6–7 complete** (MatchService, ConsumerLoop, MatchRegistry, analytics). 95 tests passing; ruff + black clean.
+- **Next task: Task 8 — player API (public info + join, player token).** See the ledger for the downstream interfaces and deferred minors.
 
 ## How to build each task (the loop)
 

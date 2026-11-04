@@ -96,3 +96,10 @@ Minors deferred (Task 6): (a) cancel() sends no "ended" broadcast and clears lis
 Interfaces for downstream (from task-6-report): ConflictError -> 409, MatchNotFoundError -> 404; MatchService(*, matches, players, events, queue, registry, settings, clock) with create_match(duration_s=None), get_match_view(id)->MatchState, update_duration(id,s), start(id) (sync, needs running loop), async cancel(id); MatchRegistry add_listener/remove_listener/broadcast/clear/is_running/start_loop/stop_loop; Broadcast = Callable[[dict], Awaitable[None]]; tick payload {type:"tick", rope, remainingS, delta{inter,gremio}, scores{inter{pulls},gremio{pulls}}}; ended payload {type:"ended", result, endReason, finalRope} (WS layer adds analytics).
 
 NEXT: Task 7 (analytics service). BASE = HEAD after this docs commit.
+
+Task 7: implemented (commit a56f7fb; report 8abc1cc; 95 pass; lint clean). compute_analytics(match, players, events, top_n=5) -> AnalyticsPayload (serialize model_dump(mode="json")); camelCase keys: result, endReason, durationS, totalPlayers, playersPerTeam{inter,gremio}, totalPulls{overall,inter,gremio}, pullsPerSecond[{t,inter,gremio}] (dense), peak{value,t}, finalRope, teams{inter,gremio}{players,totalPulls,avgPullsPerPlayer,bestPlayer,worstPlayer}, players[{playerId,name,team,pulls,pctOfTeam,pctOfAll,pullsPerSec}], leaderboard[].
+Task 7: review (sonnet-1M) — Spec ✅, Quality Approved. No Critical/Important.
+Task 7: complete (commits 5f3a796..a56f7fb, review clean).
+Minors deferred (Task 7): (a) durationS on WIN derived from last pull second+1 (Match has no finished_at; optional: add Match.finished_at set in consumer); (b) CASE MISMATCH — analytics `result` lowercase ("inter") vs WS `ended.result` uppercase ("INTER|GREMIO|DRAW") — Task 10/16 must normalise or document; (c) unpinned edge tests (event after durationS, pre-start clamp, unknown player).
+
+NEXT: Task 8 (player API: public info + join, player token). BASE = HEAD after this docs commit.
