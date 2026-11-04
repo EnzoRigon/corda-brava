@@ -102,3 +102,26 @@ canvas {
 .player-icon.gremio .player-icon-block { background: var(--gremio); }
 .start-btn { padding-inline: var(--sp-xl); font-size: 20px; }
 @keyframes player-pop { from { transform: scale(0) translateY(-40px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Host match + results */
+.match-hud { display: flex; justify-content: space-between; align-items: center; width: 100%; font-size: 28px; }
+.match-hud .score { display: flex; align-items: center; gap: var(--sp-md); }
+.match-timer { font-size: 56px; }
+.rope-scene { display: flex; align-items: center; width: 100%; margin-top: var(--sp-xl); }
+.rope-scene.shake { animation: cb-shake 120ms linear infinite; }
+@keyframes cb-shake { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(-3px, 2px); } 75% { transform: translate(3px, -2px); } }
+.scene-mascot { flex: none; transition: transform var(--motion-fast, 80ms); }
+.rope { position: relative; flex: 1; height: 40px; }
+.rope-line { position: absolute; top: 16px; left: 0; right: 0; height: 8px; background: #b8863b; }
+.rope-knot { position: absolute; top: 4px; width: 32px; height: 32px; margin-left: -16px; background: #f4f4f4; border: 4px solid #12121c; }
+.result-banner p { color: var(--muted); }
+.results-mascots { display: flex; gap: var(--sp-xl); justify-content: center; }
+.tiles, .team-tiles { display: flex; flex-wrap: wrap; gap: var(--sp-md); justify-content: center; width: 100%; }
+.tile { background: var(--panel); padding: var(--sp-md); display: flex; flex-direction: column; gap: var(--sp-sm); font-size: 12px; min-width: 160px; }
+.team-card { display: flex; flex-direction: column; gap: var(--sp-sm); }
+.team-card.inter h3 { color: var(--inter); }
+.team-card.gremio h3 { color: var(--gremio-light); }
+.leaderboard { text-align: left; font-size: 14px; line-height: 2; }
+.leaderboard .inter { color: var(--inter); }
+.leaderboard .gremio { color: var(--gremio-light); }
+.analytics { width: 100%; max-width: 1100px; }

@@ -1,22 +1,13 @@
 import HostCreate from "./pages/HostCreate";
 import HostLobby from "./pages/HostLobby";
 import HostLogin from "./pages/HostLogin";
+import HostMatch from "./pages/HostMatch";
+import HostResults from "./pages/HostResults";
 import PlayerEnd from "./pages/PlayerEnd";
 import PlayerJoin from "./pages/PlayerJoin";
 import PlayerPlay from "./pages/PlayerPlay";
 import PlayerWait from "./pages/PlayerWait";
-import { Navigate, Route, Routes, useParams } from "react-router-dom";
-
-// Placeholder pages; Tasks 12-16 replace each with the real screen.
-function Placeholder({ title, hasId = false }: { title: string; hasId?: boolean }) {
-  const { id } = useParams();
-  return (
-    <main style={{ padding: "var(--sp-lg)" }}>
-      <h1>{title}</h1>
-      {hasId && <p>Partida: {id}</p>}
-    </main>
-  );
-}
+import { Navigate, Route, Routes } from "react-router-dom";
 
 export default function App() {
   return (
@@ -25,8 +16,8 @@ export default function App() {
       <Route path="/host/login" element={<HostLogin />} />
       <Route path="/host/create" element={<HostCreate />} />
       <Route path="/host/lobby/:id" element={<HostLobby />} />
-      <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
-      <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
+      <Route path="/host/match/:id" element={<HostMatch />} />
+      <Route path="/host/results/:id" element={<HostResults />} />
       <Route path="/j/:id" element={<PlayerJoin />} />
       <Route path="/j/:id/wait" element={<PlayerWait />} />
       <Route path="/j/:id/play" element={<PlayerPlay />} />
