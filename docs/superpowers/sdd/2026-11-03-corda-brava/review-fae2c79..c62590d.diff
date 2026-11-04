@@ -1,0 +1,237 @@
+diff --git a/backend/app/api/auth.py b/backend/app/api/auth.py
+index 0541ec4..4283ef3 100644
+--- a/backend/app/api/auth.py
++++ b/backend/app/api/auth.py
+@@ -25,6 +25,6 @@ def require_host(
+     if scheme.lower() != "bearer" or not verify_host_token(token, c.settings):
+         raise HTTPException(
+             status_code=401,
+-            detail="Invalid or missing host token",
++            detail="Token de host inválido ou ausente",
+             headers={"WWW-Authenticate": "Bearer"},
+         )
+diff --git a/backend/app/api/deps.py b/backend/app/api/deps.py
+index b958452..9d1392e 100644
+--- a/backend/app/api/deps.py
++++ b/backend/app/api/deps.py
+@@ -33,6 +33,8 @@ class Container:
+     service: MatchService
+     # shortcut: per-process batchId->expiry (monotonic); swap for Redis when scaled out
+     seen_batches: dict[str, float] = field(default_factory=dict)
++    # shortcut: per-process failed-login timestamps by client IP; use a shared store when scaled out
++    login_failures: dict[str, list[float]] = field(default_factory=dict)
+ 
+ 
+ def _db_path(settings: Settings) -> str:
+diff --git a/backend/app/api/host.py b/backend/app/api/host.py
+index eb634ee..c4d6c29 100644
+--- a/backend/app/api/host.py
++++ b/backend/app/api/host.py
+@@ -2,7 +2,9 @@
+ 
+ from __future__ import annotations
+ 
+-from fastapi import APIRouter, Depends, HTTPException
++import time
++
++from fastapi import APIRouter, Depends, HTTPException, Request
+ 
+ from app.api.auth import require_host
+ from app.api.deps import Container, ContainerDep
+@@ -29,6 +31,9 @@ from app.services.match_service import MatchNotFoundError
+ router = APIRouter(prefix="/api/host", tags=["host"])
+ protected = APIRouter(prefix="/api/host", tags=["host"], dependencies=[Depends(require_host)])
+ 
++LOGIN_MAX_FAILURES = 5
++LOGIN_WINDOW_S = 60.0
++TOO_MANY = "Muitas tentativas. Tente novamente em instantes"
+ BAD_PASSWORD = "Senha incorreta"
+ BAD_DURATION = "Duração fora do intervalo permitido"
+ 
+@@ -68,8 +73,15 @@ def _created(c: Container, m: Match) -> CreateMatchResponse:
+ 
+ 
+ @router.post("/login", response_model=HostLoginResponse)
+-def login(body: HostLoginRequest, c: ContainerDep) -> HostLoginResponse:
++def login(body: HostLoginRequest, c: ContainerDep, request: Request) -> HostLoginResponse:
++    ip = request.client.host if request.client else "?"
++    now = time.monotonic()
++    recent = [t for t in c.login_failures.get(ip, []) if now - t < LOGIN_WINDOW_S]
++    if len(recent) >= LOGIN_MAX_FAILURES:
++        c.login_failures[ip] = recent
++        raise HTTPException(status_code=429, detail=TOO_MANY)
+     if not check_password(body.password, c.settings):
++        c.login_failures[ip] = [*recent, now]
+         raise HTTPException(status_code=401, detail=BAD_PASSWORD)
+     token, expires_at = issue_host_token(c.settings)
+     return HostLoginResponse(token=token, expiresAt=expires_at)
+diff --git a/backend/app/api/player.py b/backend/app/api/player.py
+index 4208d05..d5fe999 100644
+--- a/backend/app/api/player.py
++++ b/backend/app/api/player.py
+@@ -47,7 +47,7 @@ def public_info(match_id: str, c: ContainerDep) -> PublicMatch:
+     m = _match(c, match_id)
+     players = c.players.list_players(match_id)
+     return PublicMatch(
+-        status=m.status,
++        status=m.status.value.upper(),
+         teams=PublicTeams(inter=_team(m.config.inter), gremio=_team(m.config.gremio)),
+         counts=Counts(
+             inter=sum(p.team is Team.INTER for p in players),
+@@ -81,7 +81,7 @@ async def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinRespons
+         except UniqueConstraintError:  # lost a race with the same device
+             existing = c.players.get_player_by_device(match_id, body.deviceId)
+             if existing is None:
+-                raise HTTPException(status_code=500, detail="join failed") from None
++                raise HTTPException(status_code=500, detail="Falha ao entrar na partida") from None
+             player = existing
+     if is_new:
+         await c.registry.broadcast(
+@@ -148,5 +148,8 @@ def me(match_id: str, playerId: str, token: str, c: ContainerDep) -> MeResponse:
+     m = _match(c, match_id)
+     result = m.result.value.upper() if m.status is MatchStatus.FINISHED and m.result else None
+     return MeResponse(
+-        screen=_SCREEN[m.status], team=player.team, matchStatus=m.status, result=result
++        screen=_SCREEN[m.status],
++        team=player.team,
++        matchStatus=m.status.value.upper(),
++        result=result,
+     )
+diff --git a/backend/app/schemas/player.py b/backend/app/schemas/player.py
+index 049b606..67a17c0 100644
+--- a/backend/app/schemas/player.py
++++ b/backend/app/schemas/player.py
+@@ -6,7 +6,7 @@ from typing import Annotated
+ 
+ from pydantic import BaseModel, StringConstraints
+ 
+-from app.domain.enums import MatchStatus, Team
++from app.domain.enums import Team
+ 
+ NAME_MAX = 24
+ 
+@@ -46,7 +46,7 @@ class Counts(BaseModel):
+ 
+ 
+ class PublicMatch(BaseModel):
+-    status: MatchStatus
++    status: str  # LOBBY|RUNNING|FINISHED
+     teams: PublicTeams
+     counts: Counts
+     durationS: int  # noqa: N815
+diff --git a/backend/app/schemas/pulls.py b/backend/app/schemas/pulls.py
+index bb655a3..2bc86a8 100644
+--- a/backend/app/schemas/pulls.py
++++ b/backend/app/schemas/pulls.py
+@@ -6,7 +6,7 @@ from typing import Annotated, Literal
+ 
+ from pydantic import BaseModel, StringConstraints
+ 
+-from app.domain.enums import MatchStatus, Team
++from app.domain.enums import Team
+ 
+ Id = Annotated[str, StringConstraints(min_length=1, max_length=128)]
+ 
+@@ -26,5 +26,5 @@ class PullAccepted(BaseModel):
+ class MeResponse(BaseModel):
+     screen: Literal["wait", "play", "end"]
+     team: Team
+-    matchStatus: MatchStatus  # noqa: N815
++    matchStatus: str  # noqa: N815 - LOBBY|RUNNING|FINISHED
+     result: Literal["INTER", "GREMIO", "DRAW"] | None = None
+diff --git a/backend/tests/api/test_host_routes.py b/backend/tests/api/test_host_routes.py
+index bb828c9..24f4b02 100644
+--- a/backend/tests/api/test_host_routes.py
++++ b/backend/tests/api/test_host_routes.py
+@@ -45,6 +45,22 @@ def test_login_wrong_password_401_ptbr(client) -> None:
+     assert r.status_code == 401 and r.json()["detail"] == "Senha incorreta"
+ 
+ 
++def test_login_rate_limited_after_failures(client) -> None:
++    for _ in range(5):
++        assert client.post("/api/host/login", json={"password": "x"}).status_code == 401
++    r = client.post("/api/host/login", json={"password": PASSWORD})
++    assert r.status_code == 429 and "tentativas" in r.json()["detail"]
++
++
++def test_login_window_expires(client, monkeypatch) -> None:
++    import app.api.host as host
++
++    for _ in range(5):
++        client.post("/api/host/login", json={"password": "x"})
++    monkeypatch.setattr(host, "LOGIN_WINDOW_S", 0.0)
++    assert client.post("/api/host/login", json={"password": PASSWORD}).status_code == 200
++
++
+ def test_login_returns_token_and_expiry(client) -> None:
+     r = client.post("/api/host/login", json={"password": PASSWORD})
+     assert r.status_code == 200 and r.json()["token"] and r.json()["expiresAt"]
+diff --git a/backend/tests/api/test_host_ws.py b/backend/tests/api/test_host_ws.py
+index a7f418a..f73e82f 100644
+--- a/backend/tests/api/test_host_ws.py
++++ b/backend/tests/api/test_host_ws.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import time
+ from pathlib import Path
+ 
+ import pytest
+@@ -106,7 +107,8 @@ def test_tick_then_ended_with_analytics(client, host) -> None:
+         }
+         client.post(f"/api/matches/{mid}/pulls", json=body)
+         ticks, ended = [], None
+-        for _ in range(500):
++        deadline = time.monotonic() + 10
++        while time.monotonic() < deadline:
+             msg = ws.receive_json()
+             if msg["type"] == "tick":
+                 ticks.append(msg)
+diff --git a/backend/tests/api/test_player_join.py b/backend/tests/api/test_player_join.py
+index c4e91ea..59d7a8d 100644
+--- a/backend/tests/api/test_player_join.py
++++ b/backend/tests/api/test_player_join.py
+@@ -101,7 +101,7 @@ def test_public_shows_counts(ctx) -> None:
+     _join(client, match.id, device="b", team="inter")
+     _join(client, match.id, device="c", team="gremio")
+     body = client.get(f"/api/matches/{match.id}/public").json()
+-    assert body["status"] == "lobby" and body["durationS"] == 60
++    assert body["status"] == "LOBBY" and body["durationS"] == 60
+     assert body["counts"] == {"inter": 2, "gremio": 1}
+     assert body["teams"]["inter"] == {
+         "name": "Inter",
+diff --git a/backend/tests/api/test_pulls_and_me.py b/backend/tests/api/test_pulls_and_me.py
+index b3c960e..dae4941 100644
+--- a/backend/tests/api/test_pulls_and_me.py
++++ b/backend/tests/api/test_pulls_and_me.py
+@@ -114,14 +114,14 @@ def test_me_screens(ctx) -> None:
+     client, c, mid, j = ctx
+     q = {"playerId": j["playerId"], "token": j["playerToken"]}
+     get = lambda: client.get(f"/api/matches/{mid}/me", params=q)  # noqa: E731
+-    assert get().json() == {"screen": "wait", "team": "gremio", "matchStatus": "lobby"}
++    assert get().json() == {"screen": "wait", "team": "gremio", "matchStatus": "LOBBY"}
+     _set(c, mid, MatchStatus.RUNNING)
+     assert get().json()["screen"] == "play"
+     _set(c, mid, MatchStatus.FINISHED, MatchResult.GREMIO)
+     assert get().json() == {
+         "screen": "end",
+         "team": "gremio",
+-        "matchStatus": "finished",
++        "matchStatus": "FINISHED",
+         "result": "GREMIO",
+     }
+ 
+diff --git a/backend/tests/services/test_host_session.py b/backend/tests/services/test_host_session.py
+index dc421cd..a19e39a 100644
+--- a/backend/tests/services/test_host_session.py
++++ b/backend/tests/services/test_host_session.py
+@@ -58,7 +58,7 @@ def test_token_without_exp_rejected():
+ def test_other_algorithms_rejected():
+     claims = {"role": "host", "exp": int(datetime.now(UTC).timestamp()) + 60}
+     assert not verify_host_token(jwt.encode(claims, None, algorithm="none"), S)
+-    assert not verify_host_token(jwt.encode(claims, S.SECRET_KEY, algorithm="HS512"), S)
++    assert not verify_host_token(jwt.encode(claims, "k" * 64, algorithm="HS512"), S)
+ 
+ 
+ def test_verify_ws_token():

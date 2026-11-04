@@ -1,0 +1,873 @@
+diff --git a/backend/app/api/auth.py b/backend/app/api/auth.py
+index c0ed0e7..0541ec4 100644
+--- a/backend/app/api/auth.py
++++ b/backend/app/api/auth.py
+@@ -4,9 +4,10 @@ from __future__ import annotations
+ 
+ from typing import Annotated
+ 
+-from fastapi import Depends, Header, HTTPException
++from fastapi import Header, HTTPException
+ 
+-from app.core.settings import Settings, get_settings
++from app.api.deps import ContainerDep
++from app.core.settings import Settings
+ from app.services.host_session import verify_host_token
+ 
+ 
+@@ -16,12 +17,12 @@ def verify_ws_token(token: str | None, settings: Settings) -> bool:
+ 
+ 
+ def require_host(
+-    settings: Annotated[Settings, Depends(get_settings)],
++    c: ContainerDep,
+     authorization: Annotated[str | None, Header()] = None,
+ ) -> None:
+     """401 unless ``Authorization: Bearer <valid host token>`` is present."""
+     scheme, _, token = (authorization or "").partition(" ")
+-    if scheme.lower() != "bearer" or not verify_host_token(token, settings):
++    if scheme.lower() != "bearer" or not verify_host_token(token, c.settings):
+         raise HTTPException(
+             status_code=401,
+             detail="Invalid or missing host token",
+diff --git a/backend/app/api/deps.py b/backend/app/api/deps.py
+index 52f74d0..b958452 100644
+--- a/backend/app/api/deps.py
++++ b/backend/app/api/deps.py
+@@ -1,6 +1,6 @@
+ """App-scoped singletons (settings, repos, queue, registry, service) for ``Depends``.
+ 
+-The container is built lazily on first use and cached on ``app.state.container``;
++The container is built in the app lifespan (or lazily on first use), cached on app.state.container;
+ tests may pre-set ``app.state.container`` or use ``app.dependency_overrides[get_container]``.
+ """
+ 
+diff --git a/backend/app/api/host.py b/backend/app/api/host.py
+new file mode 100644
+index 0000000..eb634ee
+--- /dev/null
++++ b/backend/app/api/host.py
+@@ -0,0 +1,135 @@
++"""Host routes: login, match lifecycle, analytics. All but login require a host token."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, HTTPException
++
++from app.api.auth import require_host
++from app.api.deps import Container, ContainerDep
++from app.domain.entities import Match
++from app.domain.enums import MatchStatus, Team
++from app.schemas.analytics import AnalyticsPayload
++from app.schemas.host import HostLoginRequest, HostLoginResponse
++from app.schemas.match import (
++    ConfigOut,
++    CreateMatchRequest,
++    CreateMatchResponse,
++    MatchView,
++    Roster,
++    RosterPlayer,
++    Scores,
++    TeamScore,
++    UpdateMatchRequest,
++    config_out,
++)
++from app.services.analytics import compute_analytics
++from app.services.host_session import check_password, issue_host_token
++from app.services.match_service import MatchNotFoundError
++
++router = APIRouter(prefix="/api/host", tags=["host"])
++protected = APIRouter(prefix="/api/host", tags=["host"], dependencies=[Depends(require_host)])
++
++BAD_PASSWORD = "Senha incorreta"
++BAD_DURATION = "Duração fora do intervalo permitido"
++
++
++def match_view(c: Container, match_id: str) -> MatchView:
++    state = c.service.get_match_view(match_id)
++    m = c.matches.get_match(match_id)
++    players = c.players.list_players(match_id)
++    pulls = {Team.INTER: 0, Team.GREMIO: 0}
++    for e in c.events.list_events(match_id):
++        pulls[e.team] += e.count
++    return MatchView(
++        id=m.id,
++        status=state.status.value.upper(),
++        config=config_out(m.config),
++        roster=Roster(
++            **{
++                t.value: [RosterPlayer(id=p.id, name=p.name) for p in players if p.team is t]
++                for t in Team
++            }
++        ),
++        rope=state.rope_position,
++        remainingS=state.remaining_s or 0.0,
++        scores=Scores(
++            inter=TeamScore(pulls=pulls[Team.INTER]), gremio=TeamScore(pulls=pulls[Team.GREMIO])
++        ),
++        result=state.result.value.upper() if state.result else None,
++        endReason=state.end_reason.value if state.end_reason else None,
++    )
++
++
++def _created(c: Container, m: Match) -> CreateMatchResponse:
++    url = f"{c.settings.PUBLIC_BASE_URL.rstrip('/')}/j/{m.id}"
++    return CreateMatchResponse(
++        matchId=m.id, joinUrl=url, qrPayload=url, config=config_out(m.config)
++    )
++
++
++@router.post("/login", response_model=HostLoginResponse)
++def login(body: HostLoginRequest, c: ContainerDep) -> HostLoginResponse:
++    if not check_password(body.password, c.settings):
++        raise HTTPException(status_code=401, detail=BAD_PASSWORD)
++    token, expires_at = issue_host_token(c.settings)
++    return HostLoginResponse(token=token, expiresAt=expires_at)
++
++
++@protected.post("/matches", response_model=CreateMatchResponse, status_code=201)
++def create_match(body: CreateMatchRequest, c: ContainerDep) -> CreateMatchResponse:
++    try:
++        m = c.service.create_match(body.durationS, body.balanceMode)
++    except ValueError:
++        raise HTTPException(status_code=422, detail=BAD_DURATION) from None
++    return _created(c, m)
++
++
++@protected.get("/matches/{match_id}", response_model=MatchView)
++def get_match(match_id: str, c: ContainerDep) -> MatchView:
++    return match_view(c, match_id)
++
++
++@protected.patch("/matches/{match_id}", response_model=ConfigOut)
++def update_match(match_id: str, body: UpdateMatchRequest, c: ContainerDep) -> ConfigOut:
++    try:
++        return config_out(c.service.update_duration(match_id, body.durationS).config)
++    except ValueError:
++        raise HTTPException(status_code=422, detail=BAD_DURATION) from None
++
++
++@protected.post("/matches/{match_id}/start", response_model=MatchView)
++async def start_match(match_id: str, c: ContainerDep) -> MatchView:
++    c.service.start(match_id)  # async route: the consumer task needs the running loop
++    return match_view(c, match_id)
++
++
++@protected.post("/matches/{match_id}/cancel", response_model=MatchView)
++async def cancel_match(match_id: str, c: ContainerDep) -> MatchView:
++    if c.matches.get_match(match_id) is None:
++        raise MatchNotFoundError(match_id)
++    # service.cancel() clears the WS listeners, so tell them first.
++    await c.registry.broadcast(match_id, {"type": "cancelled"})
++    await c.service.cancel(match_id)
++    return match_view(c, match_id)
++
++
++@protected.post("/matches/{match_id}/reset", response_model=CreateMatchResponse, status_code=201)
++async def reset_match(match_id: str, c: ContainerDep) -> CreateMatchResponse:
++    """Cancel the match and create a fresh LOBBY match with the same duration/balance mode."""
++    old = c.matches.get_match(match_id)
++    if old is None:
++        raise MatchNotFoundError(match_id)
++    new = c.service.create_match(old.config.duration_s, old.config.balance_mode)
++    await c.registry.broadcast(match_id, {"type": "reset", "newMatchId": new.id})
++    await c.service.cancel(match_id)
++    return _created(c, new)
++
++
++@protected.get("/matches/{match_id}/analytics", response_model=AnalyticsPayload)
++def analytics(match_id: str, c: ContainerDep) -> AnalyticsPayload:
++    m = c.matches.get_match(match_id)
++    if m is None:
++        raise MatchNotFoundError(match_id)
++    if m.status is not MatchStatus.FINISHED:
++        raise HTTPException(status_code=409, detail="A partida ainda não terminou")
++    return compute_analytics(m, c.players.list_players(match_id), c.events.list_events(match_id))
+diff --git a/backend/app/api/player.py b/backend/app/api/player.py
+index 46a7c08..4208d05 100644
+--- a/backend/app/api/player.py
++++ b/backend/app/api/player.py
+@@ -58,9 +58,10 @@ def public_info(match_id: str, c: ContainerDep) -> PublicMatch:
+ 
+ 
+ @router.post("/{match_id}/players", response_model=JoinResponse)
+-def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
++async def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
+     m = _match(c, match_id)
+     player = c.players.get_player_by_device(match_id, body.deviceId)
++    is_new = False
+     if player is None:
+         if m.status is not MatchStatus.LOBBY:
+             # Both policies reject new joins; spectator mode is a frontend concern (see report).
+@@ -76,11 +77,21 @@ def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
+         )
+         try:
+             player = c.players.add_player(player)
++            is_new = True
+         except UniqueConstraintError:  # lost a race with the same device
+             existing = c.players.get_player_by_device(match_id, body.deviceId)
+             if existing is None:
+                 raise HTTPException(status_code=500, detail="join failed") from None
+             player = existing
++    if is_new:
++        await c.registry.broadcast(
++            match_id,
++            {
++                "type": "player_joined",
++                "team": player.team.value.upper(),
++                "player": {"id": player.id, "name": player.name},
++            },
++        )
+     token = issue_player_token(match_id, player.id, player.device_id, c.settings)
+     return JoinResponse(playerId=player.id, playerToken=token, team=player.team)
+ 
+diff --git a/backend/app/api/ws.py b/backend/app/api/ws.py
+new file mode 100644
+index 0000000..2124c0b
+--- /dev/null
++++ b/backend/app/api/ws.py
+@@ -0,0 +1,49 @@
++"""Host WebSocket: snapshot on connect, then player_joined / tick / ended / cancelled / reset."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from fastapi import APIRouter, WebSocket, WebSocketDisconnect
++
++from app.api.auth import verify_ws_token
++from app.api.deps import get_container
++from app.api.host import match_view
++from app.services.analytics import compute_analytics
++
++router = APIRouter()
++
++CLOSE_POLICY = 1008
++_CLOSING = {"cancelled", "reset"}  # terminal for this socket
++
++
++@router.websocket("/api/host/matches/{match_id}/ws")
++async def host_ws(websocket: WebSocket, match_id: str, token: str | None = None) -> None:
++    c = get_container(websocket.app)
++    await websocket.accept()
++    if not verify_ws_token(token, c.settings) or c.matches.get_match(match_id) is None:
++        await websocket.close(code=CLOSE_POLICY)
++        return
++
++    async def listener(payload: dict[str, Any]) -> None:
++        if payload.get("type") == "ended" and "analytics" not in payload:
++            m = c.matches.get_match(match_id)
++            analytics = compute_analytics(
++                m, c.players.list_players(match_id), c.events.list_events(match_id)
++            )
++            payload = {**payload, "analytics": analytics.model_dump(mode="json")}
++        await websocket.send_json(payload)
++        if payload.get("type") in _CLOSING:
++            await websocket.close()
++
++    c.registry.add_listener(match_id, listener)
++    try:
++        await websocket.send_json(
++            {"type": "snapshot", "match": match_view(c, match_id).model_dump(mode="json")}
++        )
++        while True:
++            await websocket.receive_text()  # ignore client chatter; raises on disconnect
++    except (WebSocketDisconnect, RuntimeError):
++        pass
++    finally:
++        c.registry.remove_listener(match_id, listener)
+diff --git a/backend/app/core/app_factory.py b/backend/app/core/app_factory.py
+index fac3cda..a329b55 100644
+--- a/backend/app/core/app_factory.py
++++ b/backend/app/core/app_factory.py
+@@ -10,13 +10,19 @@ Centralises app construction so:
+ from __future__ import annotations
+ 
+ import logging
++from collections.abc import AsyncIterator
++from contextlib import asynccontextmanager
+ 
+ from fastapi import FastAPI, Request
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import JSONResponse
+ 
++from app.api.deps import get_container
+ from app.api.health import router as health_router
++from app.api.host import protected as host_protected_router
++from app.api.host import router as host_router
+ from app.api.player import router as player_router
++from app.api.ws import router as ws_router
+ from app.core.logging import configure_logging
+ from app.core.settings import Settings
+ from app.services.match_service import ConflictError, MatchNotFoundError
+@@ -24,6 +30,17 @@ from app.services.match_service import ConflictError, MatchNotFoundError
+ logger = logging.getLogger(__name__)
+ 
+ 
++@asynccontextmanager
++async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
++    c = get_container(app)  # eager build: DB bootstrap + queue/registry/service
++    await c.queue.start()
++    try:
++        yield
++    finally:
++        await c.registry.stop_all()
++        await c.queue.close()
++
++
+ def create_app(settings: Settings) -> FastAPI:
+     """Build and return a configured FastAPI application.
+ 
+@@ -39,10 +56,11 @@ def create_app(settings: Settings) -> FastAPI:
+         title="Corda Brava",
+         description="Themed tug-of-war party game backend.",
+         version="0.1.0",
++        lifespan=_lifespan,
+     )
+ 
+     app.state.settings = settings
+-    app.state.container = None  # built lazily by app.api.deps.get_container
++    app.state.container = None  # built in the lifespan (lazy fallback: deps.get_container)
+ 
+     @app.exception_handler(ConflictError)
+     async def _conflict(_: Request, exc: ConflictError) -> JSONResponse:
+@@ -69,6 +87,9 @@ def create_app(settings: Settings) -> FastAPI:
+     # ── Routers ───────────────────────────────────────────────────────────────
+     app.include_router(health_router)
+     app.include_router(player_router)
++    app.include_router(host_router)
++    app.include_router(host_protected_router)
++    app.include_router(ws_router)
+ 
+     # Root /api router — empty now; later tasks attach sub-routers here.
+     from fastapi import APIRouter  # local import to keep top-level clean
+diff --git a/backend/app/core/settings.py b/backend/app/core/settings.py
+index 1d69943..ad883be 100644
+--- a/backend/app/core/settings.py
++++ b/backend/app/core/settings.py
+@@ -38,6 +38,7 @@ class Settings(BaseSettings):
+ 
+     # ── API ───────────────────────────────────────────────────────────────────
+     CORS_ORIGINS: str = "*"  # comma-separated list or wildcard
++    PUBLIC_BASE_URL: str = "http://localhost:5173"  # origin phones use; joinUrl = base/j/<id>
+ 
+     # ── Game timing ───────────────────────────────────────────────────────────
+     TICK_INTERVAL_MS: int = 500
+diff --git a/backend/app/schemas/match.py b/backend/app/schemas/match.py
+new file mode 100644
+index 0000000..f1e1465
+--- /dev/null
++++ b/backend/app/schemas/match.py
+@@ -0,0 +1,95 @@
++"""Host match models shared by the HTTP routes and the WS snapshot (camelCase on the wire)."""
++
++# ruff: noqa: N815 - wire format is camelCase per spec
++
++from __future__ import annotations
++
++from pydantic import BaseModel
++
++from app.domain.entities import MatchConfig, TeamConfig
++from app.domain.enums import BalanceMode
++from app.schemas.player import TeamColors
++
++
++class CreateMatchRequest(BaseModel):
++    durationS: int | None = None
++    balanceMode: BalanceMode | None = None
++
++
++class UpdateMatchRequest(BaseModel):
++    durationS: int
++
++
++class TeamOut(BaseModel):
++    id: str
++    name: str
++    colors: TeamColors
++
++
++class TeamsOut(BaseModel):
++    inter: TeamOut
++    gremio: TeamOut
++
++
++class ConfigOut(BaseModel):
++    durationS: int
++    ropeTarget: int
++    balanceMode: BalanceMode
++    teams: TeamsOut
++
++
++class RosterPlayer(BaseModel):
++    id: str
++    name: str
++
++
++class Roster(BaseModel):
++    inter: list[RosterPlayer]
++    gremio: list[RosterPlayer]
++
++
++class TeamScore(BaseModel):
++    pulls: int
++
++
++class Scores(BaseModel):
++    inter: TeamScore
++    gremio: TeamScore
++
++
++class MatchView(BaseModel):
++    """Full host view; also the ``match`` body of the WS ``snapshot`` message."""
++
++    id: str
++    status: str  # "LOBBY" | "RUNNING" | "FINISHED"
++    config: ConfigOut
++    roster: Roster
++    rope: float
++    remainingS: float
++    scores: Scores
++    result: str | None  # "INTER" | "GREMIO" | "DRAW" | null
++    endReason: str | None  # "win" | "timeout" | null
++
++
++class CreateMatchResponse(BaseModel):
++    matchId: str
++    joinUrl: str
++    qrPayload: str
++    config: ConfigOut
++
++
++def _team(t: TeamConfig) -> TeamOut:
++    return TeamOut(
++        id=t.id,
++        name=t.name,
++        colors=TeamColors(primary=t.primary_color, secondary=t.secondary_color),
++    )
++
++
++def config_out(c: MatchConfig) -> ConfigOut:
++    return ConfigOut(
++        durationS=c.duration_s,
++        ropeTarget=c.rope_target,
++        balanceMode=c.balance_mode,
++        teams=TeamsOut(inter=_team(c.inter), gremio=_team(c.gremio)),
++    )
+diff --git a/backend/app/services/analytics.py b/backend/app/services/analytics.py
+index 07b0cab..49a0f5b 100644
+--- a/backend/app/services/analytics.py
++++ b/backend/app/services/analytics.py
+@@ -88,7 +88,7 @@ def compute_analytics(
+         )
+ 
+     return AnalyticsPayload(
+-        result=match.result.value if match.result else None,
++        result=match.result.value.upper() if match.result else None,
+         endReason=match.end_reason.value if match.end_reason else None,
+         durationS=duration,
+         totalPlayers=len(players),
+diff --git a/backend/app/services/host_session.py b/backend/app/services/host_session.py
+index 24b4d8e..c84c115 100644
+--- a/backend/app/services/host_session.py
++++ b/backend/app/services/host_session.py
+@@ -27,7 +27,9 @@ def issue_host_token(settings: Settings) -> tuple[str, datetime]:
+ def verify_host_token(token: str, settings: Settings) -> bool:
+     """True only for a valid, unexpired token with role=host. Never raises."""
+     try:
+-        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[_ALG])
++        claims = jwt.decode(
++            token, settings.SECRET_KEY, algorithms=[_ALG], options={"require": ["exp"]}
++        )
+     except Exception:  # noqa: BLE001 - any failure means invalid
+         return False
+     return claims.get("role") == "host"
+diff --git a/backend/app/services/match_service.py b/backend/app/services/match_service.py
+index 79ee7ba..c3569d8 100644
+--- a/backend/app/services/match_service.py
++++ b/backend/app/services/match_service.py
+@@ -56,12 +56,14 @@ class MatchService:
+             )
+         return duration_s
+ 
+-    def create_match(self, duration_s: int | None = None) -> Match:
++    def create_match(
++        self, duration_s: int | None = None, balance_mode: BalanceMode | None = None
++    ) -> Match:
+         s = self._settings
+         config = MatchConfig(
+             duration_s=self._check_duration(duration_s or s.DEFAULT_MATCH_DURATION_S),
+             rope_target=s.ROPE_TARGET,
+-            balance_mode=BalanceMode(s.TEAM_BALANCE_MODE),
++            balance_mode=balance_mode or BalanceMode(s.TEAM_BALANCE_MODE),
+             inter=TeamConfig(
+                 id="inter", name="Inter", primary_color="#E5050F", secondary_color="#FFFFFF"
+             ),
+diff --git a/backend/app/services/registry.py b/backend/app/services/registry.py
+index 2d6a8d6..785e858 100644
+--- a/backend/app/services/registry.py
++++ b/backend/app/services/registry.py
+@@ -29,7 +29,7 @@ class MatchRegistry:
+             try:
+                 await cb(payload)
+             except Exception:  # noqa: BLE001 - dead socket etc.
+-                self._listeners[match_id].discard(cb)
++                self._listeners.get(match_id, set()).discard(cb)
+ 
+     def is_running(self, match_id: str) -> bool:
+         task = self._tasks.get(match_id)
+@@ -52,6 +52,10 @@ class MatchRegistry:
+ 
+         task.add_done_callback(_done)
+ 
++    async def stop_all(self) -> None:
++        for match_id in list(self._tasks):
++            await self.stop_loop(match_id)
++
+     async def stop_loop(self, match_id: str) -> None:
+         task = self._tasks.pop(match_id, None)
+         if task is not None and not task.done():
+diff --git a/backend/tests/api/test_host_routes.py b/backend/tests/api/test_host_routes.py
+new file mode 100644
+index 0000000..bb828c9
+--- /dev/null
++++ b/backend/tests/api/test_host_routes.py
+@@ -0,0 +1,135 @@
++"""Host HTTP route tests (TestClient as context manager so the app lifespan + loop run)."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++from app.core.app_factory import create_app
++from app.core.settings import Settings
++from app.repositories.sqlite.connection import close_connection
++
++PASSWORD = "pw-test"
++
++
++@pytest.fixture()
++def client(tmp_path: Path):
++    db = tmp_path / "t.db"
++    settings = Settings(
++        DATABASE_URL=f"sqlite:///{db.as_posix()}",
++        SECRET_KEY="s" * 32,
++        HOST_PASSWORD=PASSWORD,
++        TICK_INTERVAL_MS=20,
++        MATCH_DURATION_MIN_S=1,
++        PUBLIC_BASE_URL="http://lan:5173/",
++    )
++    with TestClient(create_app(settings)) as c:
++        yield c
++    close_connection(db)
++
++
++@pytest.fixture()
++def auth(client):
++    tok = client.post("/api/host/login", json={"password": PASSWORD}).json()["token"]
++    return {"Authorization": f"Bearer {tok}"}
++
++
++def _create(client, auth, **body):
++    return client.post("/api/host/matches", json=body, headers=auth)
++
++
++def test_login_wrong_password_401_ptbr(client) -> None:
++    r = client.post("/api/host/login", json={"password": "nope"})
++    assert r.status_code == 401 and r.json()["detail"] == "Senha incorreta"
++
++
++def test_login_returns_token_and_expiry(client) -> None:
++    r = client.post("/api/host/login", json={"password": PASSWORD})
++    assert r.status_code == 200 and r.json()["token"] and r.json()["expiresAt"]
++
++
++@pytest.mark.parametrize(
++    "method,path",
++    [
++        ("post", "/api/host/matches"),
++        ("get", "/api/host/matches/X"),
++        ("patch", "/api/host/matches/X"),
++        ("post", "/api/host/matches/X/start"),
++        ("post", "/api/host/matches/X/reset"),
++        ("post", "/api/host/matches/X/cancel"),
++        ("get", "/api/host/matches/X/analytics"),
++    ],
++)
++def test_unauthenticated_is_401(client, method, path) -> None:
++    kwargs = {} if method == "get" else {"json": {}}
++    assert getattr(client, method)(path, **kwargs).status_code == 401
++
++
++def test_create_match(client, auth) -> None:
++    r = _create(client, auth, durationS=45, balanceMode="raw")
++    assert r.status_code == 201
++    b = r.json()
++    assert b["joinUrl"] == f"http://lan:5173/j/{b['matchId']}" == b["qrPayload"]
++    assert b["config"]["durationS"] == 45 and b["config"]["balanceMode"] == "raw"
++    assert b["config"]["teams"]["inter"]["name"] == "Inter"
++
++
++def test_create_match_out_of_range_422(client, auth) -> None:
++    assert _create(client, auth, durationS=99999).status_code == 422
++
++
++def test_get_match_view(client, auth) -> None:
++    mid = _create(client, auth).json()["matchId"]
++    b = client.get(f"/api/host/matches/{mid}", headers=auth).json()
++    assert b["status"] == "LOBBY" and b["rope"] == 0 and b["result"] is None
++    assert b["roster"] == {"inter": [], "gremio": []}
++    assert client.get("/api/host/matches/NOPE", headers=auth).status_code == 404
++
++
++def test_patch_duration(client, auth) -> None:
++    mid = _create(client, auth).json()["matchId"]
++    url = f"/api/host/matches/{mid}"
++    r = client.patch(url, json={"durationS": 50}, headers=auth)
++    assert r.status_code == 200 and r.json()["durationS"] == 50
++    assert client.patch(url, json={"durationS": 9999}, headers=auth).status_code == 422
++
++
++def test_start_then_patch_409(client, auth) -> None:
++    mid = _create(client, auth, durationS=30).json()["matchId"]
++    r = client.post(f"/api/host/matches/{mid}/start", headers=auth)
++    assert r.status_code == 200 and r.json()["status"] == "RUNNING"
++    r = client.patch(f"/api/host/matches/{mid}", json={"durationS": 40}, headers=auth)
++    assert r.status_code == 409
++    assert client.post(f"/api/host/matches/{mid}/start", headers=auth).status_code == 409
++
++
++def test_cancel_finishes_match(client, auth) -> None:
++    mid = _create(client, auth, durationS=30).json()["matchId"]
++    client.post(f"/api/host/matches/{mid}/start", headers=auth)
++    r = client.post(f"/api/host/matches/{mid}/cancel", headers=auth)
++    assert r.status_code == 200 and r.json()["status"] == "FINISHED" and r.json()["result"] is None
++
++
++def test_reset_returns_new_lobby_match(client, auth) -> None:
++    mid = _create(client, auth, durationS=40, balanceMode="raw").json()["matchId"]
++    client.post(f"/api/host/matches/{mid}/start", headers=auth)
++    r = client.post(f"/api/host/matches/{mid}/reset", headers=auth)
++    assert r.status_code == 201
++    new = r.json()
++    assert new["matchId"] != mid and new["config"]["durationS"] == 40
++    assert new["config"]["balanceMode"] == "raw" and new["joinUrl"].endswith(new["matchId"])
++    view = client.get(f"/api/host/matches/{new['matchId']}", headers=auth)
++    assert view.json()["status"] == "LOBBY"
++    assert client.get(f"/api/host/matches/{mid}", headers=auth).json()["status"] == "FINISHED"
++
++
++def test_analytics_after_finish(client, auth) -> None:
++    mid = _create(client, auth, durationS=30).json()["matchId"]
++    assert client.get(f"/api/host/matches/{mid}/analytics", headers=auth).status_code == 409
++    client.post(f"/api/host/matches/{mid}/start", headers=auth)
++    client.post(f"/api/host/matches/{mid}/cancel", headers=auth)
++    r = client.get(f"/api/host/matches/{mid}/analytics", headers=auth)
++    assert r.status_code == 200
++    assert r.json()["totalPlayers"] == 0 and r.json()["result"] is None
+diff --git a/backend/tests/api/test_host_ws.py b/backend/tests/api/test_host_ws.py
+new file mode 100644
+index 0000000..a7f418a
+--- /dev/null
++++ b/backend/tests/api/test_host_ws.py
+@@ -0,0 +1,136 @@
++"""Host WebSocket tests. Every receive is bounded: the 1 s match timer always ends the match."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++from starlette.websockets import WebSocketDisconnect
++
++from app.core.app_factory import create_app
++from app.core.settings import Settings
++from app.repositories.sqlite.connection import close_connection
++
++PASSWORD = "pw-test"
++
++
++@pytest.fixture()
++def client(tmp_path: Path):
++    db = tmp_path / "t.db"
++    settings = Settings(
++        DATABASE_URL=f"sqlite:///{db.as_posix()}",
++        SECRET_KEY="s" * 32,
++        HOST_PASSWORD=PASSWORD,
++        TICK_INTERVAL_MS=20,
++        MATCH_DURATION_MIN_S=1,
++    )
++    with TestClient(create_app(settings)) as c:
++        yield c
++    close_connection(db)
++
++
++@pytest.fixture()
++def host(client):
++    tok = client.post("/api/host/login", json={"password": PASSWORD}).json()["token"]
++    h = {"Authorization": f"Bearer {tok}"}
++    mid = client.post("/api/host/matches", json={"durationS": 1}, headers=h).json()["matchId"]
++    return h, tok, mid
++
++
++def _url(mid, tok=None):
++    return f"/api/host/matches/{mid}/ws" + (f"?token={tok}" if tok else "")
++
++
++def _join(client, mid, device="d1", name="Ana", team="inter"):
++    return client.post(
++        f"/api/matches/{mid}/players", json={"name": name, "team": team, "deviceId": device}
++    )
++
++
++def test_ws_without_token_closed_1008(client, host) -> None:
++    _, _, mid = host
++    with client.websocket_connect(_url(mid)) as ws, pytest.raises(WebSocketDisconnect) as e:
++        ws.receive_json()
++    assert e.value.code == 1008
++
++
++def test_ws_bad_token_closed_1008(client, host) -> None:
++    _, _, mid = host
++    with client.websocket_connect(_url(mid, "garbage")) as ws:
++        with pytest.raises(WebSocketDisconnect) as e:
++            ws.receive_json()
++    assert e.value.code == 1008
++
++
++def test_ws_first_message_is_snapshot(client, host) -> None:
++    _, tok, mid = host
++    _join(client, mid, name="Ana")
++    with client.websocket_connect(_url(mid, tok)) as ws:
++        msg = ws.receive_json()
++    m = msg["match"]
++    assert msg["type"] == "snapshot" and m["id"] == mid and m["status"] == "LOBBY"
++    assert m["config"]["durationS"] == 1 and m["rope"] == 0 and m["remainingS"] == 1
++    assert [p["name"] for p in m["roster"]["inter"]] == ["Ana"] and m["roster"]["gremio"] == []
++    assert m["scores"] == {"inter": {"pulls": 0}, "gremio": {"pulls": 0}}
++    assert m["result"] is None and m["endReason"] is None
++
++
++def test_player_joined_pushed_once(client, host) -> None:
++    _, tok, mid = host
++    with client.websocket_connect(_url(mid, tok)) as ws:
++        ws.receive_json()
++        r = _join(client, mid, name="Bia", team="gremio")
++        _join(client, mid, name="Bia", team="gremio")  # idempotent re-join: no second event
++        _join(client, mid, device="d2", name="Caio", team="inter")
++        assert ws.receive_json() == {
++            "type": "player_joined",
++            "team": "GREMIO",
++            "player": {"id": r.json()["playerId"], "name": "Bia"},
++        }
++        assert ws.receive_json()["player"]["name"] == "Caio"
++
++
++def test_tick_then_ended_with_analytics(client, host) -> None:
++    h, tok, mid = host
++    j = _join(client, mid).json()
++    with client.websocket_connect(_url(mid, tok)) as ws:
++        ws.receive_json()
++        client.post(f"/api/host/matches/{mid}/start", headers=h)
++        body = {
++            "playerId": j["playerId"],
++            "playerToken": j["playerToken"],
++            "count": 3,
++            "clientTs": 1.0,
++            "batchId": "b1",
++        }
++        client.post(f"/api/matches/{mid}/pulls", json=body)
++        ticks, ended = [], None
++        for _ in range(500):
++            msg = ws.receive_json()
++            if msg["type"] == "tick":
++                ticks.append(msg)
++            elif msg["type"] == "ended":
++                ended = msg
++                break
++    assert ticks and set(ticks[0]) == {"type", "rope", "remainingS", "delta", "scores"}
++    assert ended["result"] in {"INTER", "GREMIO", "DRAW"}
++    assert ended["endReason"] in {"win", "timeout"}
++    assert ended["analytics"]["totalPulls"]["inter"] == 3
++    assert ended["analytics"]["result"] == ended["result"]  # same casing everywhere
++
++
++def test_reset_notifies_ws(client, host) -> None:
++    h, tok, mid = host
++    with client.websocket_connect(_url(mid, tok)) as ws:
++        ws.receive_json()
++        new = client.post(f"/api/host/matches/{mid}/reset", headers=h).json()["matchId"]
++        assert ws.receive_json() == {"type": "reset", "newMatchId": new}
++
++
++def test_cancel_notifies_ws(client, host) -> None:
++    h, tok, mid = host
++    with client.websocket_connect(_url(mid, tok)) as ws:
++        ws.receive_json()
++        client.post(f"/api/host/matches/{mid}/cancel", headers=h)
++        assert ws.receive_json() == {"type": "cancelled"}
+diff --git a/backend/tests/services/test_analytics.py b/backend/tests/services/test_analytics.py
+index 8e6916f..643c6b0 100644
+--- a/backend/tests/services/test_analytics.py
++++ b/backend/tests/services/test_analytics.py
+@@ -59,7 +59,7 @@ def test_bucketing_and_peak():
+     assert len(a.pullsPerSecond) == 10  # full duration on timeout
+     assert a.peak.model_dump() == {"value": 10, "t": 3}
+     assert a.totalPulls.model_dump() == {"overall": 19, "inter": 10, "gremio": 9}
+-    assert a.finalRope == -30.0 and a.result == "inter" and a.endReason == "timeout"
++    assert a.finalRope == -30.0 and a.result == "INTER" and a.endReason == "timeout"
+ 
+ 
+ def test_best_worst_and_percentages():
+diff --git a/backend/tests/services/test_host_session.py b/backend/tests/services/test_host_session.py
+index f1d4c96..dc421cd 100644
+--- a/backend/tests/services/test_host_session.py
++++ b/backend/tests/services/test_host_session.py
+@@ -3,13 +3,15 @@
+ from __future__ import annotations
+ 
+ from datetime import UTC, datetime
++from types import SimpleNamespace
+ 
+ import jwt
+ from fastapi import Depends, FastAPI
+ from fastapi.testclient import TestClient
+ 
+ from app.api.auth import require_host, verify_ws_token
+-from app.core.settings import Settings, get_settings
++from app.api.deps import container_dep
++from app.core.settings import Settings
+ from app.services.host_session import check_password, issue_host_token, verify_host_token
+ 
+ S = Settings(HOST_PASSWORD="Pässwörd", SECRET_KEY="k" * 32, HOST_TOKEN_TTL_SECONDS=60)
+@@ -48,6 +50,17 @@ def test_wrong_role():
+     assert not verify_host_token(token, S)
+ 
+ 
++def test_token_without_exp_rejected():
++    token = jwt.encode({"role": "host"}, S.SECRET_KEY, algorithm="HS256")
++    assert not verify_host_token(token, S)
++
++
++def test_other_algorithms_rejected():
++    claims = {"role": "host", "exp": int(datetime.now(UTC).timestamp()) + 60}
++    assert not verify_host_token(jwt.encode(claims, None, algorithm="none"), S)
++    assert not verify_host_token(jwt.encode(claims, S.SECRET_KEY, algorithm="HS512"), S)
++
++
+ def test_verify_ws_token():
+     token, _ = issue_host_token(S)
+     assert verify_ws_token(token, S)
+@@ -56,7 +69,7 @@ def test_verify_ws_token():
+ 
+ def _client() -> TestClient:
+     app = FastAPI()
+-    app.dependency_overrides[get_settings] = lambda: S
++    app.dependency_overrides[container_dep] = lambda: SimpleNamespace(settings=S)
+ 
+     @app.get("/x", dependencies=[Depends(require_host)])
+     def x() -> dict:

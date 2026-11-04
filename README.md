@@ -24,10 +24,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 7 | Analytics service (§15 payload: timeline, peak, best/worst, %, leaderboard) + tests | ✅ reviewed |
 | 8 | Player API — public info + join (one-per-device idempotent), player token, DI container + tests | ✅ reviewed |
 | 9 | Pull ingest (202, batchId dedup, clamp) + `/me` player screen + tests | ✅ reviewed |
+| 10 | Host routes + host WebSocket (snapshot/tick/ended), lifespan wiring, login rate limit + tests | ✅ reviewed |
 
-**Current test count:** 116 passing (backend). Lint (ruff + black) clean.
+**Current test count:** 144 passing (backend). Lint (ruff + black) clean.
 
-**Not yet built:** rest of Phase B (Task 10 host routes + WebSocket); Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Backend (Phases A + B) complete.** **Not yet built:** Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 
