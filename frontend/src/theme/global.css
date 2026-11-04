@@ -1,0 +1,54 @@
+@font-face {
+  font-family: "Press Start 2P";
+  src: url("../assets/fonts/PressStart2P.woff2") format("woff2");
+  font-display: swap;
+}
+
+:root {
+  --inter: #e5050f;
+  --inter-dark: #7a0309;
+  --gremio: #0d80bf;
+  --gremio-light: #4fa9dc;
+  --gremio-black: #000;
+  --bg: #12121c;
+  --panel: #1d1d2e;
+  --text: #f4f4f4;
+  --muted: #9a9ab0;
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 16px;
+  --sp-lg: 24px;
+  --sp-xl: 40px;
+  --z-scene: 10;
+  --z-hud: 20;
+  --z-overlay: 100;
+  --z-toast: 200;
+  --font-pixel: "Press Start 2P", monospace;
+  --safe-top: env(safe-area-inset-top);
+  --safe-bottom: env(safe-area-inset-bottom);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+img,
+canvas {
+  image-rendering: pixelated;
+}
