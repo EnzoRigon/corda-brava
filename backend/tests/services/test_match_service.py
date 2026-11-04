@@ -43,6 +43,33 @@ async def test_update_duration_only_in_lobby(env: Env) -> None:
     await env.svc.cancel(env.match.id)
 
 
+async def test_ptbr_conflict_messages(env: Env) -> None:
+    env.svc.start(env.match.id)
+    with pytest.raises(ConflictError, match="já foi iniciada"):
+        env.svc.start(env.match.id)
+    with pytest.raises(ConflictError, match="só pode ser alterada"):
+        env.svc.update_duration(env.match.id, 100)
+    await env.svc.cancel(env.match.id)
+
+
+async def test_resume_running_restarts_loop_and_finishes_expired(env: Env) -> None:
+    env.force_running()  # RUNNING in the repo, no loop (as after a restart)
+    assert not env.registry.is_running(env.match.id)
+    env.svc.resume_running()
+    assert env.registry.is_running(env.match.id)
+    await env.svc.cancel(env.match.id)
+
+    env.force_running()
+    env.now = T0 + __import__("datetime").timedelta(seconds=61)  # expired while down
+    env.svc.resume_running()
+    for _ in range(50):
+        if not env.registry.is_running(env.match.id):
+            break
+        await __import__("asyncio").sleep(0.01)
+    m = env.matches.get_match(env.match.id)
+    assert m.status is MatchStatus.FINISHED and m.end_reason is not None
+
+
 def test_view_lobby_remaining(env: Env) -> None:
     v = env.svc.get_match_view(env.match.id)
     assert v.status is MatchStatus.LOBBY and v.remaining_s == 60

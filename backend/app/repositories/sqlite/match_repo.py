@@ -156,6 +156,10 @@ class SQLiteMatchRepository:
             return None
         return _row_to_match(row)
 
+    def list_running(self) -> list[Match]:
+        rows = self._conn.execute("SELECT * FROM matches WHERE status = 'running'").fetchall()
+        return [_row_to_match(r) for r in rows]
+
     def update_match(self, match: Match) -> Match:
         """UPDATE the mutable runtime columns of an existing Match."""
         params = _update_params(match)

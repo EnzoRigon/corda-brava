@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, ApiError } from "../api/client";
 import { sendPulls } from "../api/playerApi";
+import { newId } from "./useDeviceId";
 import type { PullRequest } from "../types/api";
 
 export const MAX_PULLS_PER_BATCH = 200;
@@ -32,7 +33,7 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
     if (!unacked.current && pending.current > 0) {
       const count = Math.min(pending.current, MAX_PULLS_PER_BATCH);
       pending.current -= count;
-      unacked.current = { count, batchId: crypto.randomUUID() };
+      unacked.current = { count, batchId: newId() };
     }
     return unacked.current;
   };

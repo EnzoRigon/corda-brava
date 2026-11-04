@@ -24,6 +24,7 @@ def client(tmp_path: Path):
         SECRET_KEY="s" * 32,
         HOST_PASSWORD=PASSWORD,
         TICK_INTERVAL_MS=20,
+        MAX_PULLS_PER_PLAYER_PER_S=1000,
         MATCH_DURATION_MIN_S=1,
     )
     with TestClient(create_app(settings)) as c:

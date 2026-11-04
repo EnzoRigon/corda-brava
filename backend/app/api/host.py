@@ -81,6 +81,8 @@ def _created(c: Container, m: Match) -> CreateMatchResponse:
 def login(body: HostLoginRequest, c: ContainerDep, request: Request) -> HostLoginResponse:
     ip = request.client.host if request.client else "?"
     now = time.monotonic()
+    for k in [k for k, v in c.login_failures.items() if not v or now - v[-1] >= LOGIN_WINDOW_S]:
+        del c.login_failures[k]  # bound memory: drop IPs with no failure in the window
     recent = [t for t in c.login_failures.get(ip, []) if now - t < LOGIN_WINDOW_S]
     if len(recent) >= LOGIN_MAX_FAILURES:
         c.login_failures[ip] = recent
@@ -124,6 +126,8 @@ async def start_match(match_id: str, c: ContainerDep) -> MatchView:
 async def cancel_match(match_id: str, c: ContainerDep) -> MatchView:
     if c.matches.get_match(match_id) is None:
         raise MatchNotFoundError(match_id)
+    if c.matches.get_match(match_id).status is MatchStatus.FINISHED:
+        raise HTTPException(status_code=409, detail="A partida já terminou")
     # service.cancel() clears the WS listeners, so tell them first.
     await c.registry.broadcast(match_id, {"type": "cancelled"})
     await c.service.cancel(match_id)

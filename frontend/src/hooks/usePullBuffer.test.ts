@@ -46,6 +46,15 @@ describe("usePullBuffer", () => {
     expect(send).toHaveBeenCalledTimes(1); // 2xx cleared it
   });
 
+  it("still posts with a batchId when crypto.randomUUID is missing (http LAN)", async () => {
+    vi.stubGlobal("crypto", {});
+    tap(2);
+    await tick();
+    vi.unstubAllGlobals();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][1].batchId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
   it("resends the same batchId after failure, then uses a new id", async () => {
     send.mockRejectedValueOnce(new Error("net"));
     tap(3);

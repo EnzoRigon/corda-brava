@@ -56,7 +56,7 @@ Spawned subagents inherit a large MCP/tool-definition payload (~300k tokens). **
 
 ## Art & assets policy (must hold)
 
-The mascots (Saci / Mosqueteiro) and club crests are **owner-authored image files** committed under `docs/`. The app only **copies and displays** them — **no code may draw, generate, or render the club mascots or crests**. If new art is needed, use original assets/characters, never code that reproduces the club characters.
+The mascots (Saci / Mosqueteiro) and club crests are **owner-authored image files** committed under `docs/`. The app only **copies and displays** them — **no app code (frontend/backend) may draw, generate, or render the club mascots or crests**. (`.claude/skills/pixel-art-studio/pixel-art/corda-brava/` is the owner's sprite-authoring tooling that produced those owner files; it is not app code.) If new art is needed, use original assets/characters, never code that reproduces the club characters.
 
 ## Conventions from the spec worth remembering
 

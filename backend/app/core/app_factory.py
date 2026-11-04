@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     c = get_container(app)  # eager build: DB bootstrap + queue/registry/service
     await c.queue.start()
+    c.service.resume_running()
     try:
         yield
     finally:

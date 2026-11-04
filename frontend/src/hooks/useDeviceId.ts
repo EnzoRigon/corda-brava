@@ -2,7 +2,8 @@ import { useState } from "react";
 
 const KEY = "cb.deviceId";
 
-function newId(): string {
+/** randomUUID only exists in secure contexts (https/localhost); plain http://<LAN-IP> needs the fallback. */
+export function newId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;

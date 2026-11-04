@@ -34,7 +34,7 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
 | 18 | READMEs + Playwright end-to-end flow (host + player, two browser contexts) | ✅ reviewed |
 
-**Current test count:** 144 passing (backend), 49 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
+**Current test count:** 153 passing (backend), 54 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
 
 **All 18 tasks are built.** Task 18 added the READMEs and a Playwright end-to-end flow (green against the Vite dev stack). Docker (`docker compose up`) has **not** been run: Docker was unavailable in the build environment. See the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for details.
 
@@ -151,7 +151,7 @@ workers or replicas would split a match's state. Scaling out needs the Azure que
 
 ## Art & assets policy (important)
 
-The two mascots — Inter's **Saci** and Grêmio's **Mosqueteiro** — and the club crests are **image files authored and committed by the project owner** (under `docs/mascot-references/.../assets/` and `docs/logo-references/`). The application **copies and displays those files**; **no code draws, generates, or renders the club mascots or crests**. This keeps the project self-contained with the owner's own assets and avoids any code-level reproduction of the characters. If you extend the art, add original assets or original characters — do not write code that renders the club mascots/crests.
+The two mascots — Inter's **Saci** and Grêmio's **Mosqueteiro** — and the club crests are **image files authored and committed by the project owner** (under `docs/mascot-references/.../assets/` and `docs/logo-references/`). The application **copies and displays those files**; **no code draws, generates, or renders the club mascots or crests**. This keeps the project self-contained with the owner's own assets and avoids any code-level reproduction of the characters. **Deliberate deviation from `prompt.md` §1:** the spec asks for the mascots/crests to be drawn in code; this project instead uses the owner-authored image files above. If you extend the art, add original assets or original characters — do not write code that renders the club mascots/crests.
 
 ---
 

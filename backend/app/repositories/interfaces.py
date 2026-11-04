@@ -47,6 +47,10 @@ class MatchRepository(Protocol):
         """Atomically persist new events and the match update (single transaction)."""
         ...
 
+    def list_running(self) -> list[Match]:
+        """Return every match currently in RUNNING status (restart recovery)."""
+        ...
+
 
 class PlayerRepository(Protocol):
     """Persistence interface for Player entities.

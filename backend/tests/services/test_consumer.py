@@ -30,7 +30,12 @@ class Env:
         self.db = tmp_path / "t.db"
         bootstrap_db(self.db)
         self.now = T0
-        self.settings = Settings(ROPE_TARGET=5, TEAM_BALANCE_MODE="raw", TICK_INTERVAL_MS=1)
+        self.settings = Settings(
+            ROPE_TARGET=5,
+            TEAM_BALANCE_MODE="raw",
+            TICK_INTERVAL_MS=1,
+            MAX_PULLS_PER_PLAYER_PER_S=10**6,
+        )
         self.matches = SQLiteMatchRepository(self.db)
         self.players = SQLitePlayerRepository(self.db)
         self.events = SQLiteEventRepository(self.db)
@@ -114,6 +119,17 @@ async def test_tick_persists_moves_rope_and_acks(env: Env) -> None:
     assert tick["type"] == "tick" and tick["rope"] == 3
     assert tick["delta"] == {"inter": 0, "gremio": 3}
     assert tick["scores"]["gremio"]["pulls"] == 3 and tick["remainingS"] == 60
+
+
+async def test_per_player_cap_limits_one_tick(env: Env) -> None:
+    env.settings.MAX_PULLS_PER_PLAYER_PER_S = 10  # tick 1ms -> floor of 1 pull
+    env.settings.TICK_INTERVAL_MS = 500  # cap = 5
+    loop = env.force_running()
+    await env.pull(Team.INTER, 200, "f1")
+    await env.pull(Team.INTER, 200, "f2")  # same player, same tick: shares the cap
+    await loop.tick()
+    assert env.matches.get_match(env.match.id).rope_position == -5
+    assert sum(e.count for e in env.events.list_events(env.match.id)) == 5
 
 
 async def test_duplicate_batch_id_has_no_extra_effect(env: Env) -> None:

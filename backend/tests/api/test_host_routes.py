@@ -129,6 +129,55 @@ def test_cancel_finishes_match(client, auth) -> None:
     assert r.status_code == 200 and r.json()["status"] == "FINISHED" and r.json()["result"] is None
 
 
+def test_cancel_finished_match_409(client, auth) -> None:
+    mid = _create(client, auth, durationS=30).json()["matchId"]
+    client.post(f"/api/host/matches/{mid}/cancel", headers=auth)
+    assert client.post(f"/api/host/matches/{mid}/cancel", headers=auth).status_code == 409
+
+
+def test_login_failures_pruned_and_ignores_spoof_nothing_left(client, monkeypatch) -> None:
+    import app.api.host as host
+
+    for _ in range(3):
+        client.post("/api/host/login", json={"password": "x"})
+    c = client.app.state.container
+    assert len(c.login_failures) == 1
+    monkeypatch.setattr(host, "LOGIN_WINDOW_S", 0.0)
+    client.post("/api/host/login", json={"password": PASSWORD})
+    assert c.login_failures == {}
+
+
+def test_restart_recovers_running_match(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.enums import MatchStatus
+    from app.repositories.sqlite.match_repo import SQLiteMatchRepository
+
+    db = tmp_path / "r.db"
+    settings = Settings(
+        DATABASE_URL=f"sqlite:///{db.as_posix()}", SECRET_KEY="s" * 32, TICK_INTERVAL_MS=20
+    )
+    with TestClient(create_app(settings)) as c1:  # first boot creates the DB
+        svc = c1.app.state.container.service
+        live, dead = svc.create_match(60), svc.create_match(60)
+    repo = SQLiteMatchRepository(db)
+    for m, delta in ((live, 60), (dead, -5)):
+        m = repo.get_match(m.id)
+        m.status = MatchStatus.RUNNING
+        m.started_at = datetime.now(UTC)
+        m.ends_at = m.started_at + timedelta(seconds=delta)
+        repo.update_match(m)
+    close_connection(db)
+    with TestClient(create_app(settings)) as c2:
+        reg = c2.app.state.container.registry
+        import time
+
+        time.sleep(0.3)
+        assert reg.is_running(live.id)
+        assert c2.app.state.container.matches.get_match(dead.id).status is MatchStatus.FINISHED
+    close_connection(db)
+
+
 def test_reset_returns_new_lobby_match(client, auth) -> None:
     mid = _create(client, auth, durationS=40, balanceMode="raw").json()["matchId"]
     client.post(f"/api/host/matches/{mid}/start", headers=auth)

@@ -9,7 +9,7 @@ export default function PlayerEnd() {
   const draw = me?.result === "DRAW";
   const won = me?.result === session.team.toUpperCase();
   const state: MascotState = !me?.result || draw ? "idle" : won ? "happy" : "crying";
-  const title = !me?.result ? "" : draw ? "Empate!" : won ? "Seu time venceu!" : "Seu time perdeu!";
+  const title = !me ? "" : !me.result ? "Partida cancelada" : draw ? "Empate!" : won ? "Seu time venceu!" : "Seu time perdeu!";
   return (
     <main className="player-page">
       <Mascot team={session.team} state={state} size={160} />

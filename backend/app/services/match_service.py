@@ -95,7 +95,7 @@ class MatchService:
     def update_duration(self, match_id: str, duration_s: int) -> Match:
         m = self._get(match_id)
         if m.status is not MatchStatus.LOBBY:
-            raise ConflictError("duration can only change in LOBBY")
+            raise ConflictError("A duração só pode ser alterada no lobby")
         m.config.duration_s = self._check_duration(duration_s)
         return self._matches.update_match(m)
 
@@ -103,11 +103,21 @@ class MatchService:
         """LOBBY -> RUNNING and spin up the consumer task (needs a running event loop)."""
         m = self._get(match_id)
         if m.status is not MatchStatus.LOBBY:
-            raise ConflictError(f"cannot start a match in {m.status.value}")
+            raise ConflictError("A partida já foi iniciada ou encerrada")
         m.status = MatchStatus.RUNNING
         m.started_at = self._clock().astimezone(UTC)
         m.ends_at = m.started_at + timedelta(seconds=m.config.duration_s)
         m = self._matches.update_match(m)
+        self._spawn_loop(match_id)
+        return m
+
+    def resume_running(self) -> None:
+        """Restart recovery: re-launch loops for RUNNING matches (expired ones end on tick 1)."""
+        for m in self._matches.list_running():
+            if not self._registry.is_running(m.id):
+                self._spawn_loop(m.id)
+
+    def _spawn_loop(self, match_id: str) -> None:
         loop = ConsumerLoop(
             match_id,
             matches=self._matches,
@@ -119,7 +129,6 @@ class MatchService:
             clock=self._clock,
         )
         self._registry.start_loop(match_id, loop.run())
-        return m
 
     async def cancel(self, match_id: str) -> Match:
         """Tear down the loop; an unfinished match becomes FINISHED with no result."""

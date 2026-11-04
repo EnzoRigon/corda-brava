@@ -10,6 +10,7 @@ from typing import Any
 Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
 
 log = logging.getLogger(__name__)
+BROADCAST_TIMEOUT_S = 1.0
 
 
 class MatchRegistry:
@@ -27,7 +28,7 @@ class MatchRegistry:
         """Send to every listener; a failing listener is dropped, never breaks the loop."""
         for cb in list(self._listeners.get(match_id, ())):
             try:
-                await cb(payload)
+                await asyncio.wait_for(cb(payload), BROADCAST_TIMEOUT_S)
             except Exception:  # noqa: BLE001 - dead socket etc.
                 self._listeners.get(match_id, set()).discard(cb)
 

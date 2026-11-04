@@ -70,6 +70,9 @@ class ConsumerLoop:
         abandon, drop, mine, new_events = [], [], [], []
         delta = {Team.INTER: 0, Team.GREMIO: 0}
         seen: set[str] = set()
+        s = self._settings
+        cap = max(1, round(s.MAX_PULLS_PER_PLAYER_PER_S * s.TICK_INTERVAL_MS / 1000))
+        landed: dict[str, int] = {}
         for m in msgs:
             ev = m.payload
             if ev.match_id != self.match_id:
@@ -85,6 +88,10 @@ class ConsumerLoop:
                 drop.append(m)  # duplicate / redelivery: no effect, just ack
             else:
                 seen.add(ev.batch_id)
+                # anti-cheat: excess over the per-tick cap is dropped, not carried over
+                room = cap - landed.get(ev.player_id, 0)
+                ev = ev.model_copy(update={"count": min(ev.count, room)})
+                landed[ev.player_id] = landed.get(ev.player_id, 0) + ev.count
                 new_events.append(ev)
                 delta[ev.team] += ev.count
                 mine.append(m)
