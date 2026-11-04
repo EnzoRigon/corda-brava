@@ -11,7 +11,7 @@ This is a **private / educational fan project** (a party game), **not** a commer
 Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following the plan in
 [`docs/superpowers/plans/2026-11-03-corda-brava.md`](./docs/superpowers/plans/2026-11-03-corda-brava.md).
 
-**Done so far (backend, Phase A — complete):**
+**Build status (all 18 plan tasks done):**
 
 | Task | What | State |
 |------|------|-------|
@@ -32,6 +32,7 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 15 | `useHostSocket` + host Login / Create / Lobby (QR, animated roster) | ✅ reviewed |
 | 16 | Host match rope scene (interpolated knot, timer) + results with analytics charts | ✅ reviewed |
 | 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
+| 18 | READMEs + Playwright end-to-end flow (host + player, two browser contexts) | ✅ reviewed |
 
 **Current test count:** 144 passing (backend), 49 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
 

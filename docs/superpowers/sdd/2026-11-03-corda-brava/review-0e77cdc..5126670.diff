@@ -1,0 +1,325 @@
+diff --git a/.gitignore b/.gitignore
+index 2610b8e..ebc0f62 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -20,3 +20,7 @@ build/
+ 
+ # Secrets
+ .env
++
++# Playwright
++playwright-report/
++test-results/
+diff --git a/README.md b/README.md
+index 5e5bdbc..b91d808 100644
+--- a/README.md
++++ b/README.md
+@@ -33,9 +33,9 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following
+ | 16 | Host match rope scene (interpolated knot, timer) + results with analytics charts | ✅ reviewed |
+ | 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
+ 
+-**Current test count:** 144 passing (backend), 49 passing (frontend). Lint (ruff + black) clean.
++**Current test count:** 144 passing (backend), 49 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
+ 
+-**Backend (Phases A + B) and frontend (Phase C) complete.** **Not yet built:** Task 18 (end-to-end test + run README). Docker files exist but `docker compose up` has not been run yet. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
++**All 18 tasks are built.** Task 18 added the READMEs and a Playwright end-to-end flow (green against the Vite dev stack). Docker (`docker compose up`) has **not** been run: Docker was unavailable in the build environment. See the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for details.
+ 
+ ---
+ 
+@@ -66,28 +66,75 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following
+ 
+ ---
+ 
+-## Running the backend (dev)
++## Running it
+ 
+-Requires Python 3.11+ (developed on 3.14).
++### Local dev (two terminals, or `.claude/launch.json` configs `backend` + `frontend`)
+ 
+ ```bash
+-cd backend
+-python3 -m venv .venv
+-. .venv/bin/activate
+-pip install -e .
+-pip install pytest pytest-asyncio ruff black   # dev tools
+-
+-# run the tests
+-python -m pytest -v
+-
+-# run the API (health check only until the routers land)
+-uvicorn app.core.app_factory:create_app --factory --reload
+-# then: curl http://localhost:8000/health  ->  {"status":"ok"}
++# backend (see backend/README.md): venv + pip install -e .
++cd backend && uvicorn app.core.app_factory:create_app --factory --reload   # :8000
++# frontend
++cd frontend && npm install && npm run dev                                   # :5173, proxies /api + WS
+ ```
+ 
+-Configuration is environment-driven via `pydantic-settings` (`backend/app/core/settings.py`); defaults match `prompt.md` §4. A root `.env.example` documenting every variable lands in Phase D.
++Open http://localhost:5173/host/login. Default host password: see `HOST_PASSWORD` in settings / `.env.example`.
+ 
+-> The full `docker compose up` single-port stack, the frontend, and the LAN/QR run instructions are specified in `prompt.md` §4b / §16–§18 and will be filled in as those phases are built.
++### Docker (prod, single port)
++
++```bash
++cp .env.example .env        # set HOST_PASSWORD and SECRET_KEY (python -c "import secrets; print(secrets.token_hex(32))")
++docker compose up -d --build
++# open http://<host>/        (nginx serves the SPA and proxies /api + WS; SQLite lives on a named volume)
++```
++
++### Docker (dev, hot reload)
++
++```bash
++docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # needs Compose >= 2.24
++```
++
++### LAN play / QR code
++
++Phones cannot open `localhost`. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` in `.env` to `http://<LAN-IP>` (add `:PORT`
++if `PUBLIC_PORT` is not 80) before building, so the QR points at an address phones can reach.
++
++### Host and player flow
++
++1. Host opens `/host/login`, enters the password, picks duration (30-600 s) and scoring, and creates a match.
++2. The lobby shows a QR code and live roster. Players scan it (`/j/<matchId>`), enter a name, pick Inter or Grêmio
++   (one player per device).
++3. Host clicks **Iniciar partida**. Players tap **PUXAR**; the rope moves live on the host screen.
++4. The match ends when a team drags the rope to its side, or on timeout (draw). Players see a result screen;
++   the host sees a banner, charts and a leaderboard, and can start **Nova Partida**.
++
++### End-to-end test
++
++With the stack running: `cd frontend && npx playwright install chromium && npm run e2e` (details in
++`frontend/README.md`; `E2E_BASE_URL=http://localhost` targets the Docker stack).
++
++### Swapping to Azure Service Bus
++
++The queue is broker-shaped (async, leased receive, explicit ack, at-least-once, idempotent by `batchId`). To move off
++the in-memory queue:
++
++1. Add one file, `backend/app/queue/azure_service_bus.py`, with `AzureServiceBusEventQueue` implementing the
++   `EventQueue` Protocol (`start`, `close`, `enqueue`, `receive_batch`, `ack`, `abandon`) on the `azure-servicebus` async SDK.
++2. Add its `elif` branch in `backend/app/queue/factory.py`.
++3. Set `QUEUE_BACKEND=azure_service_bus`, `AZURE_SERVICEBUS_CONNECTION_STRING` and `AZURE_SERVICEBUS_QUEUE_NAME`.
++
++No consumer, service or domain changes are needed. Until the adapter exists the factory raises `NotImplementedError`.
++
++### VPS, TLS and wss
++
++Run the Docker stack on the VPS and put a TLS-terminating reverse proxy (Caddy, Traefik, or nginx + certbot) in front of
++port 80, forwarding to it with WebSocket upgrade headers. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` to
++`https://<your-domain>`. WebSocket and API URLs derive from the page origin, so they become `wss://` / `https://`
++automatically; leave `VITE_API_BASE` / `VITE_WS_BASE` empty. Restrict `CORS_ORIGINS` from `*` to your origin.
++
++### Scaling limitation
++
++Run **one process, one worker**. The in-memory queue, match registry and batch dedup are per-process, so multiple
++workers or replicas would split a match's state. Scaling out needs the Azure queue plus shared state, which is out of scope.
+ 
+ ---
+ 
+diff --git a/backend/README.md b/backend/README.md
+new file mode 100644
+index 0000000..eefb6f5
+--- /dev/null
++++ b/backend/README.md
+@@ -0,0 +1,42 @@
++# Corda Brava — backend
++
++FastAPI + SQLite (WAL). Python 3.11+ (developed on 3.14).
++
++## Run
++
++```bash
++cd backend
++python -m venv .venv
++.venv/Scripts/activate        # Windows (Git Bash); on Linux/macOS: . .venv/bin/activate
++pip install -e .
++pip install pytest pytest-asyncio ruff black
++uvicorn app.core.app_factory:create_app --factory --reload   # http://localhost:8000/health
++```
++
++## Test and lint
++
++```bash
++python -m pytest -q
++python -m ruff check . && python -m black --check .
++```
++
++## Settings
++
++Environment-driven via `pydantic-settings` (`app/core/settings.py`); a `.env` file or process env. Every variable
++is documented in the root [`.env.example`](../.env.example). Key ones: `HOST_PASSWORD`, `SECRET_KEY` (required in
++production), `PUBLIC_BASE_URL` (origin phones open from the QR), `DATABASE_URL`, `ROPE_TARGET`, `TEAM_BALANCE_MODE`
++(`normalized`|`raw`), `LATE_JOIN_POLICY`, `QUEUE_BACKEND` (`memory`|`azure_service_bus`).
++
++## Layout
++
++```
++app/core/          settings, app factory (lifespan wiring), logging
++app/domain/        entities, enums, pure game rules (no IO)
++app/repositories/  repository Protocols + SQLite implementations
++app/queue/         broker-shaped EventQueue, in-memory impl, factory
++app/services/      match state machine, consumer loop, registry, analytics
++app/api/           player + host REST routes, host WebSocket
++tests/             pytest
++```
++
++Single-process by design: the in-memory queue, match registry and batch dedup are per-process (see the root README).
+diff --git a/frontend/README.md b/frontend/README.md
+new file mode 100644
+index 0000000..74ab91f
+--- /dev/null
++++ b/frontend/README.md
+@@ -0,0 +1,51 @@
++# Corda Brava — frontend
++
++React 18 + Vite + TypeScript. Host screens (login, create, lobby, match, results) and player screens (join, wait,
++play, end). Player-facing copy is PT-BR.
++
++## Run
++
++```bash
++cd frontend
++npm install
++npm run dev        # http://localhost:5173, proxies /api (incl. WebSocket) to http://localhost:8000
++```
++
++## Test, lint, build
++
++```bash
++npm test -- --run          # unit tests (vitest; e2e/ is excluded)
++npm run lint && npx tsc --noEmit
++npm run build
++```
++
++## End-to-end (Playwright)
++
++The stack must already be running (backend on :8000 + `npm run dev`, or the Docker stack). Once per machine:
++`npx playwright install chromium`.
++
++```bash
++npm run e2e                                   # against http://localhost:5173
++E2E_BASE_URL=http://localhost npm run e2e     # against the Docker stack
++E2E_HOST_PASSWORD=... npm run e2e             # if HOST_PASSWORD is not the default
++```
++
++`e2e/flow.spec.ts` drives a host and a player in separate browser contexts: login, create (30 s), join, start,
++tap PUXAR, knot moves, match ends, end screen and results/analytics. It creates its own match.
++
++## Env (build-time)
++
++`VITE_*` variables are baked in at build time (Docker build args), not read at runtime:
++`VITE_PUBLIC_BASE` (join-URL fallback), `VITE_API_BASE` / `VITE_WS_BASE` (leave empty for same-origin),
++`VITE_PROXY_TARGET` (dev-server proxy target).
++
++## Layout
++
++```
++src/api/         typed REST client
++src/hooks/       useDeviceId, usePullBuffer, useHostSocket, useMePolling
++src/pages/       Host* and Player* screens
++src/components/  Mascot, Crest, RopeScene, PullButton, charts...
++src/theme/       CSS + pixel font
++e2e/             Playwright spec
++```
+diff --git a/frontend/e2e/flow.spec.ts b/frontend/e2e/flow.spec.ts
+new file mode 100644
+index 0000000..ed23f26
+--- /dev/null
++++ b/frontend/e2e/flow.spec.ts
+@@ -0,0 +1,47 @@
++import { expect, test } from "@playwright/test";
++
++const HOST_PASSWORD = process.env.E2E_HOST_PASSWORD ?? "Inter>Gremio";
++
++test("host creates, player joins and pulls, match ends, results shown", async ({ browser }) => {
++  const host = await (await browser.newContext()).newPage();
++  const player = await (await browser.newContext()).newPage();
++
++  // 1. Host logs in and creates a minimum-duration match.
++  await host.goto("/host/login");
++  await host.getByLabel("Senha do host").fill(HOST_PASSWORD);
++  await host.getByRole("button", { name: "Entrar" }).click();
++  await host.getByLabel("Duração (segundos)").fill("30");
++  await host.getByRole("button", { name: "Criar partida" }).click();
++  await expect(host).toHaveURL(/\/host\/lobby\/[^/]+$/);
++  const matchId = host.url().split("/").pop()!;
++  await expect(host.locator(".join-url")).toContainText(`/j/${matchId}`);
++  const joinPath = new URL((await host.locator(".join-url").innerText()).trim()).pathname;
++
++  // 2. Player joins from a separate context (separate deviceId).
++  await player.goto(joinPath);
++  await player.getByLabel("Seu nome").fill("Teste E2E");
++  await player.getByRole("radio", { name: /Inter/ }).click();
++  await player.getByRole("button", { name: "Entrar" }).click();
++  await expect(player.getByRole("heading", { name: "Aguardando o host iniciar" })).toBeVisible();
++
++  // 3. Host sees the player and starts.
++  await expect(host.locator(".team-roster").first()).toContainText("Teste E2E");
++  await host.getByRole("button", { name: "Iniciar partida" }).click();
++  await expect(host).toHaveURL(/\/host\/match\//);
++
++  // 4. Player taps PUXAR; the knot moves away from 50%.
++  const puxar = player.getByRole("button", { name: "PUXAR" });
++  await expect(puxar).toBeVisible();
++  const knotLeft = () => host.getByTestId("knot").evaluate((el) => parseFloat((el as HTMLElement).style.left));
++  await expect(async () => {
++    for (let i = 0; i < 10; i++) await puxar.dispatchEvent("pointerdown", { button: 0 });
++    expect(Math.abs((await knotLeft()) - 50)).toBeGreaterThan(1);
++  }).toPass({ timeout: 15_000 });
++
++  // 5-6. Match ends (win or the 30 s timeout); both screens show the end state.
++  await expect(player.getByText("Obrigado por jogar!")).toBeVisible({ timeout: 60_000 });
++  await expect(host).toHaveURL(/\/host\/results\//);
++  await expect(host.locator(".result-banner")).toBeVisible();
++  await expect(host.getByRole("heading", { name: "Ranking" })).toBeVisible();
++  await expect(host.getByText("Teste E2E").first()).toBeVisible();
++});
+diff --git a/frontend/package.json b/frontend/package.json
+index db5809d..2faeaa2 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -8,7 +8,8 @@
+     "build": "tsc --noEmit && vite build",
+     "preview": "vite preview",
+     "test": "vitest",
+-    "lint": "eslint src"
++    "lint": "eslint src",
++    "e2e": "playwright test"
+   },
+   "dependencies": {
+     "qrcode.react": "^4.2.0",
+@@ -20,6 +21,7 @@
+   "devDependencies": {
+     "@eslint/js": "^10.0.1",
+     "@fontsource/press-start-2p": "^5.3.0",
++    "@playwright/test": "^1.64.1",
+     "@types/react": "^18.3.31",
+     "@types/react-dom": "^18.3.7",
+     "@vitejs/plugin-react": "^6.2.1",
+diff --git a/frontend/playwright.config.ts b/frontend/playwright.config.ts
+new file mode 100644
+index 0000000..8eda6eb
+--- /dev/null
++++ b/frontend/playwright.config.ts
+@@ -0,0 +1,10 @@
++import { defineConfig } from "@playwright/test";
++
++// No webServer block: the stack (backend + Vite, or the Docker stack) must already be running.
++export default defineConfig({
++  testDir: "./e2e",
++  timeout: 120_000,
++  reporter: "list",
++  use: { baseURL: process.env.E2E_BASE_URL ?? "http://localhost:5173" },
++  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
++});
+diff --git a/frontend/vitest.config.ts b/frontend/vitest.config.ts
+index 8634280..b65d60a 100644
+--- a/frontend/vitest.config.ts
++++ b/frontend/vitest.config.ts
+@@ -1,3 +1,3 @@
+ import { defineConfig } from "vitest/config";
+ 
+-export default defineConfig({ test: { environment: "jsdom" } });
++export default defineConfig({ test: { environment: "jsdom", exclude: ["e2e/**", "node_modules/**"] } });

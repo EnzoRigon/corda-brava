@@ -190,3 +190,11 @@ Task 17: complete (commits e7b3061..ac04463, review clean; Docker runtime UNVERI
 Minors deferred (Task 17): (a) `ports: !override` requires Compose 2.24+; (b) Vite file watching over Windows bind mounts may need polling; (c) VITE_PUBLIC_BASE is build-time fallback only (server PUBLIC_BASE_URL wins).
 
 NEXT: Task 18 (E2E + run README). BASE = HEAD after this docs commit.
+
+Task 18: implemented (commit 5126670; report 1832df2). frontend/playwright.config.ts (baseURL E2E_BASE_URL || :5173, chromium, no webServer), e2e/flow.spec.ts (two contexts: host login->create->lobby->read .join-url; player joins Inter; host Iniciar; player pointerdown taps; knot leaves 50%; match ends by timeout (30 s); player "Obrigado por jogar!"; host results banner + Ranking), npm script e2e, vitest excludes e2e/**, .gitignore playwright-report/test-results. READMEs: root (Running it: local dev, Docker prod/dev, LAN/QR, flows, E2E, Azure swap, VPS/TLS/wss, scaling limit), backend/README.md, frontend/README.md. No app bugs found.
+Validation loop: backend ruff/black/pytest 144 ✅; frontend lint/tsc/vitest 49/build ✅; Docker NOT RUN (no Docker); Playwright 1 passed (controller re-ran: 34.6 s ✅).
+Task 18: review (sonnet-1M) — Spec ✅, Quality Approved. Controller fixed README status heading + added row 18.
+Task 18: complete (commits 0e77cdc..5126670, review clean).
+Minors deferred (Task 18): (a) tsconfig include omits e2e/ + playwright.config.ts; (b) README layout section still terse for frontend/tests; (c) E2E covers timeout end only, not rope win.
+
+## ALL 18 PLAN TASKS COMPLETE. Final whole-project review (opus) dispatched.
