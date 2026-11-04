@@ -219,3 +219,7 @@ P1: complete (commits f6a899b..7c21e15).
 
 Rope fix: implemented (commit ef7a5fe; report b188ed7; vitest 49, tsc/lint/build, playwright 1 passed). Mascot keeps sprite aspect (width=size, height auto; pull/happy/defeat/cry 384x448, master 48x48). .rope-scene sized from --mascot-w; rope line top = H*280/448, thickness H*24/448, two-tone #caa15a/#9c7838, flex-start, no gap; push scale transform-origin 100% 65% (inter) / 0% 65% (gremio). Controller verified live with a screenshot of a RUNNING match: rope continuous out of both hands. Note for P6: idle master.png is 48x48 square — do not use idle inside the rope scene without re-measuring.
 Rope fix: complete (commits 3a75f3f..ef7a5fe).
+
+Final-review fix round: implemented (commit 65dfcd2; report aa21f07; backend 153, frontend 54, playwright 1). Re-review (sonnet): all 9 ADDRESSED, Approved; recommended raising the per-player cap.
+Ruling (owner, direct msg): MAX_PULLS_PER_PLAYER_PER_S default = 50 (per-tick cap 25 at 500 ms) so fast multi-finger tappers never lose pulls; fully capped (count 0) batches are acked but not recorded/broadcast. Commits a485790, 659b1ad (backend 154 pass).
+Final-review fixes: complete (commits 36cd7a5..659b1ad). Deferred to polish P6: Cancel button on HostMatch, mascots prop in match. README test counts to refresh at end of polish.
