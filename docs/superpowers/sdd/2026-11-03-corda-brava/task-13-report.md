@@ -24,3 +24,9 @@ On `visibilitychange` (hidden) and `pagehide`: sends the unacked batch (or a new
 - No @testing-library; harness is react-dom/client createRoot + act.
 - Beacon URL built as `API_BASE + /api/matches/{id}/pulls` since playerApi exposes no URL helper (its `m` is private); sendPulls is reused for normal flushes.
 - Tests were written together with the implementation; red-run not separately observed.
+
+## Fix round 1 (f08a3bd)
+- Any 4xx except 408/429 now drops the batch (no poison-batch retry loop); network errors, 5xx, 408, 429 keep the same-batchId retry.
+- 401/403/409 additionally set a `stopped` ref and zero pending; `flush` and `flushOnHide` are skipped while set. Reset when `enabled`, matchId, playerId or token change. Taps still increment displayCount.
+- Tests: visibilityState reset moved to afterEach; beacon test checks Blob type and body keys; new tests for beacon-then-interval same batchId, tap during in-flight (no concurrent POST), 422 drop, stop-after-409.
+- Checks: 17/17 tests pass; tsc, build, lint clean.
