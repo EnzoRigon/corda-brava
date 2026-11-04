@@ -216,3 +216,6 @@ Concurrent: rope-alignment fix (owner bug report: mascot rope misaligned with ro
 P1: implemented (commit 7c21e15; report 1dad1f5). 1x PNGs in frontend/src/assets/ui/: logo-160x56, logo-small-96x36, 16 icons icon-<name>.png 16x16, fx-sparkle-strip-6f-8px, fx-dust-strip-5f-12px, fx-confetti-sheet-4x2-4px, bg-sky-tile-64, bg-moon-32, bg-cloud-a/b-48x16, bg-stadium-strip-128x48, bg-pitch-strip-32x24. Build scripts .claude/skills/pixel-art-studio/pixel-art/corda-brava-ui/ (shared 32-color pal.py). No mascots/crests drawn.
 P1: review — controller inspected contact-sheet.png directly: cohesive palette, legible logo, icons readable at 16px, scenery tileable-looking. Approved.
 P1: complete (commits f6a899b..7c21e15).
+
+Rope fix: implemented (commit ef7a5fe; report b188ed7; vitest 49, tsc/lint/build, playwright 1 passed). Mascot keeps sprite aspect (width=size, height auto; pull/happy/defeat/cry 384x448, master 48x48). .rope-scene sized from --mascot-w; rope line top = H*280/448, thickness H*24/448, two-tone #caa15a/#9c7838, flex-start, no gap; push scale transform-origin 100% 65% (inter) / 0% 65% (gremio). Controller verified live with a screenshot of a RUNNING match: rope continuous out of both hands. Note for P6: idle master.png is 48x48 square — do not use idle inside the rope scene without re-measuring.
+Rope fix: complete (commits 3a75f3f..ef7a5fe).
