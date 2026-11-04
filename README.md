@@ -1,92 +1,154 @@
+<div align="center">
+
+<img src="frontend/src/assets/ui/logo-160x56.png" alt="Corda Brava" width="480">
+
 # Corda Brava
 
-> **Corda Brava** ("fierce rope") — a themed, mobile-join **tug-of-war party game**: **Inter** (red) vs **Grêmio** (blue/black). A host opens a big screen and shows a QR code; players scan it on their phones, pick a team, and spam a **PUXAR** button. Every tap tugs a rope live on the host screen between two pixel-art mascots. First team to drag the rope fully to their side wins; if time runs out it's a draw (*empate*). The host screen then shows a celebration + analytics.
+**A pixel-art tug-of-war party game: Inter vs Grêmio, one tap at a time.**
 
-This is a **private / educational fan project** (a party game), **not** a commercial product. All player-facing copy is **Brazilian Portuguese (PT-BR)**; code, identifiers, and comments are English.
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
 
----
+<img src="docs/readme/match.gif" alt="A live Corda Brava match on the host screen" width="800">
 
-## Status (work in progress)
+</div>
 
-Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following the plan in
-[`docs/superpowers/plans/2026-11-03-corda-brava.md`](./docs/superpowers/plans/2026-11-03-corda-brava.md).
+## The mascots and crests
 
-**Build status (all 18 plan tasks done):**
+<div align="center">
 
-| Task | What | State |
-|------|------|-------|
-| 1 | Backend skeleton — settings, app factory, domain entities & enums, `/health` | ✅ reviewed |
-| 2 | Pure game rules (`apply_pulls` / `check_win` / `resolve_result`) + tests | ✅ reviewed |
-| 3 | Repository interfaces + SQLite impls (WAL, unique constraints) + tests | ✅ reviewed |
-| 4 | Broker-shaped `EventQueue` + in-memory lease/ack/redelivery + tests | ✅ reviewed |
-| 5 | Host auth — password check, JWT host token, `require_host`, WS token verify + tests | ✅ reviewed |
-| 6 | Match state machine + single-writer consumer loop (atomic apply, poison-safe) + registry + tests | ✅ reviewed |
-| 7 | Analytics service (§15 payload: timeline, peak, best/worst, %, leaderboard) + tests | ✅ reviewed |
-| 8 | Player API — public info + join (one-per-device idempotent), player token, DI container + tests | ✅ reviewed |
-| 9 | Pull ingest (202, batchId dedup, clamp) + `/me` player screen + tests | ✅ reviewed |
-| 10 | Host routes + host WebSocket (snapshot/tick/ended), lifespan wiring, login rate limit + tests | ✅ reviewed |
-| 11 | Frontend skeleton — Vite + React + TS, routing, theme, pixel font, typed API client, `useDeviceId` | ✅ reviewed |
-| 12 | Owner mascot/crest files copied verbatim + `Mascot`/`Crest` display components | ✅ reviewed |
-| 13 | `usePullBuffer` — batched taps, same-batchId retry, clamp, flush-on-hide (sendBeacon) | ✅ reviewed |
-| 14 | Player flow — Join → Wait → Play (PUXAR) → End, `/me` polling, session restore on reload | ✅ reviewed |
-| 15 | `useHostSocket` + host Login / Create / Lobby (QR, animated roster) | ✅ reviewed |
-| 16 | Host match rope scene (interpolated knot, timer) + results with analytics charts | ✅ reviewed |
-| 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
-| 18 | READMEs + Playwright end-to-end flow (host + player, two browser contexts) | ✅ reviewed |
+| Saci (Inter) | Mosqueteiro (Grêmio) | Inter crest | Grêmio crest |
+|:---:|:---:|:---:|:---:|
+| <img src="docs/mascot-references/mascot-test/assets/saci_happy.gif" width="128" alt="Saci"> | <img src="docs/mascot-references/mascot-test/assets/mosq_happy.gif" width="128" alt="Mosqueteiro"> | <img src="docs/logo-references/inter.png" width="128" alt="Inter crest"> | <img src="docs/logo-references/gremio.png" width="128" alt="Grêmio crest"> |
 
-**Current test count:** 153 passing (backend), 54 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
+</div>
 
-**All 18 tasks are built.** Task 18 added the READMEs and a Playwright end-to-end flow (green against the Vite dev stack). Docker (`docker compose up`) has **not** been run: Docker was unavailable in the build environment. See the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for details.
+*All mascots and crests are owner-authored art files; the app only displays them.*
 
----
+## What it is
 
-## Repository layout
+A host opens a big screen (a TV or projector) and shows a QR code. Players scan it with their phones, enter a name,
+pick **Inter** (red) or **Grêmio** (blue/black) and tap the **PUXAR** button as fast as they can. Every tap tugs a
+rope live on the host screen, between two pixel-art mascots. The first team to drag the rope all the way to their
+side wins; if time runs out, it is a draw (*empate*). The host screen then shows a celebration and match analytics.
+
+This is a private fan party game, not a commercial product. Player-facing text is Brazilian Portuguese (PT-BR);
+code, identifiers and comments are English.
+
+## Features
+
+- Host login (password + JWT), match creation with 30-600 s duration and selectable scoring.
+- Lobby with a QR code and a live, animated roster; one player per device, late join blocked by default.
+- Mobile-first player flow: Join, Wait, Play (PUXAR), End, with session restore on reload.
+- Live rope scene with an interpolated knot, a server-authoritative timer and chiptune sound effects.
+- Results screen with analytics: timeline, peak moments, best/worst players, team percentages, leaderboard.
+- Batched taps with idempotent retries, a per-player anti-cheat rate cap and flush-on-hide.
+- Broker-shaped event queue, ready to be swapped for Azure Service Bus.
+- Single-port Docker deployment (nginx serves the SPA and proxies the API and WebSocket).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    P["Phones<br/>PUXAR taps"] --> N["nginx / Vite<br/>single entry point"]
+    N --> A["FastAPI<br/>pull ingest"]
+    A --> Q["EventQueue<br/>broker-shaped"]
+    Q --> C["ConsumerLoop<br/>single writer"]
+    C --> R["Repositories"]
+    R --> D[("SQLite, WAL")]
+    C --> W["WebSocket broadcast"]
+    W --> H["Host screen"]
+    N -. serves SPA .-> H
+```
+
+- **Domain rules.** The rope lives in `[-ROPE_TARGET, +ROPE_TARGET]` with `0` at the center; negative is Inter
+  (left), positive is Grêmio (right). Scoring defaults to `normalized` (per-player intensity, fair for uneven teams);
+  `raw` is selectable. The pure rules are in `backend/app/domain/rules.py` and have no IO or framework dependencies.
+- **Idempotency.** Clients send taps in batches with a `batchId`. The ingest endpoint answers `202` and dedups by
+  `batchId`, so a retried batch never counts twice. The queue itself is at-least-once (leased receive, explicit ack,
+  redelivery of unacked batches), and the consumer is safe against redelivery.
+- **Azure Service Bus swap.** Add `backend/app/queue/azure_service_bus.py` with an `AzureServiceBusEventQueue`
+  implementing the `EventQueue` Protocol, add one `elif` in `queue/factory.py`, and set
+  `QUEUE_BACKEND=azure_service_bus`. No consumer, service or domain changes are needed. Until the adapter exists,
+  the factory raises `NotImplementedError`.
+- **Scaling limit.** Run one process, one worker. The in-memory queue, match registry and batch dedup are
+  per-process, so multiple workers or replicas would split a match's state. Scaling out needs the Azure queue plus
+  shared state, which is out of scope.
+
+Design rationale: [`docs/superpowers/specs/2026-11-03-corda-brava-design.md`](./docs/superpowers/specs/2026-11-03-corda-brava-design.md).
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.11+, FastAPI, pydantic-settings, SQLite (WAL) behind repository Protocols |
+| Frontend | React 18, TypeScript, Vite, React Router, Recharts, qrcode.react, Press Start 2P |
+| Tests | pytest, Vitest, Playwright |
+| Deploy | Docker Compose, nginx |
+
+## Project structure
 
 ```
-/
-├── prompt.md                  # the authoritative spec (what to build) — leave as-is
-├── backend/                   # FastAPI backend (Python 3.11+)
+corda-brava/
+├── prompt.md                  # authoritative spec
+├── backend/
 │   ├── app/
+│   │   ├── api/               # player, host, auth, WebSocket routes
 │   │   ├── core/              # settings, app factory, logging
-│   │   ├── domain/            # entities, enums, PURE game rules (no IO/framework)
-│   │   ├── repositories/      # repo interfaces + SQLite impls (WAL, behind Protocols)
-│   │   └── queue/             # broker-shaped EventQueue + in-memory impl + factory
-│   ├── tests/                 # pytest (domain rules, repos, queue, settings, health)
-│   └── pyproject.toml
-├── frontend/                  # React 18 + Vite + TS (host + player screens)
+│   │   ├── domain/            # entities, enums, pure game rules
+│   │   ├── queue/             # EventQueue Protocol, in-memory impl, factory
+│   │   ├── repositories/      # interfaces + SQLite implementations
+│   │   ├── schemas/           # request/response models
+│   │   └── services/          # match service, consumer loop, registry, analytics, sessions
+│   └── tests/
+├── frontend/
+│   ├── src/                   # pages, components, hooks, api client, theme, pixel assets
+│   ├── e2e/                   # Playwright end-to-end flow
+│   ├── scripts/               # record-readme-gif.mjs
+│   └── nginx.conf
 ├── docs/
-│   ├── logo-references/        # owner-authored pixel-art club crests (inter.png, gremio.png)
-│   ├── mascot-references/       # owner-authored mascot references + ready-made sprite assets
-│   │   └── mascot-test/assets/  # saci_*.gif/png, mosq_*.gif/png  (the sprites the game will use)
-│   └── superpowers/
-│       ├── specs/              # design doc (decisions layered on the spec)
-│       ├── plans/              # the task-by-task implementation plan
-│       └── sdd/                # progress ledger + per-task briefs/reports/review diffs
-└── README.md / CLAUDE.md
+│   ├── logo-references/       # owner-authored club crests
+│   ├── mascot-references/     # owner-authored mascot sprites
+│   ├── readme/                # README media
+│   └── superpowers/           # spec, plan, SDD progress ledger
+├── docker-compose.yml
+├── docker-compose.dev.yml
+└── .env.example
 ```
 
----
+## Getting started
 
-## Running it
-
-### Local dev (two terminals, or `.claude/launch.json` configs `backend` + `frontend`)
+### Local development
 
 ```bash
-# backend (see backend/README.md): venv + pip install -e .
-cd backend && uvicorn app.core.app_factory:create_app --factory --reload   # :8000
-# frontend
-cd frontend && npm install && npm run dev                                   # :5173, proxies /api + WS
+# backend (:8000) - see backend/README.md
+cd backend
+python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+uvicorn app.core.app_factory:create_app --factory --reload
+
+# frontend (:5173, proxies /api and WebSocket)
+cd frontend
+npm install
+npm run dev
 ```
 
-Open http://localhost:5173/host/login. Default host password: see `HOST_PASSWORD` in settings / `.env.example`.
+Open <http://localhost:5173/host/login>. The host password is set by `HOST_PASSWORD`
+(see `backend/app/core/settings.py` for the dev default).
 
-### Docker (prod, single port)
+### Docker (production, single port)
 
 ```bash
-cp .env.example .env        # set HOST_PASSWORD and SECRET_KEY (python -c "import secrets; print(secrets.token_hex(32))")
+cp .env.example .env     # set HOST_PASSWORD and SECRET_KEY
+# python -c "import secrets; print(secrets.token_hex(32))"
 docker compose up -d --build
-# open http://<host>/        (nginx serves the SPA and proxies /api + WS; SQLite lives on a named volume)
 ```
+
+Open `http://<host>/`. SQLite lives on a named volume.
 
 ### Docker (dev, hot reload)
 
@@ -94,67 +156,64 @@ docker compose up -d --build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # needs Compose >= 2.24
 ```
 
-### LAN play / QR code
+### LAN play and the QR code
 
-Phones cannot open `localhost`. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` in `.env` to `http://<LAN-IP>` (add `:PORT`
-if `PUBLIC_PORT` is not 80) before building, so the QR points at an address phones can reach.
+Phones cannot open `localhost`. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` in `.env` to `http://<LAN-IP>`
+(append `:PORT` if `PUBLIC_PORT` is not 80) before building, so the QR code points at an address phones can reach.
 
-### Host and player flow
+## Configuration
 
-1. Host opens `/host/login`, enters the password, picks duration (30-600 s) and scoring, and creates a match.
-2. The lobby shows a QR code and live roster. Players scan it (`/j/<matchId>`), enter a name, pick Inter or Grêmio
-   (one player per device).
-3. Host clicks **Iniciar partida**. Players tap **PUXAR**; the rope moves live on the host screen.
-4. The match ends when a team drags the rope to its side, or on timeout (draw). Players see a result screen;
-   the host sees a banner, charts and a leaderboard, and can start **Nova Partida**.
+Set in `.env` (see `.env.example`); defaults live in `backend/app/core/settings.py`.
 
-### End-to-end test
+| Variable | Default | Purpose |
+|---|---|---|
+| `HOST_PASSWORD` | `change-me` in `.env.example` | Host login password (required in Docker) |
+| `SECRET_KEY` | random in dev | JWT signing key (required in Docker) |
+| `PUBLIC_PORT` | `80` | Host port of the nginx entry point |
+| `PUBLIC_BASE_URL` / `VITE_PUBLIC_BASE` | `http://localhost` | Origin encoded in the QR code |
+| `CORS_ORIGINS` | `*` | Allowed origins; restrict in production |
+| `DATABASE_URL` | `sqlite:///./corda_brava.db` | Database location |
+| `TICK_INTERVAL_MS` | `500` | Rope update and broadcast interval |
+| `DEFAULT_MATCH_DURATION_S` | `120` | Default match length (min 30, max 600) |
+| `ROPE_TARGET` | `100` | Rope distance needed to win |
+| `MAX_PULLS_PER_PLAYER_PER_S` | `50` | Per-player anti-cheat cap |
+| `LATE_JOIN_POLICY` | `block` | `block` or `spectator` |
+| `TEAM_BALANCE_MODE` | `normalized` | `normalized` or `raw` scoring |
+| `QUEUE_BACKEND` | `memory` | `memory` or `azure_service_bus` |
 
-With the stack running: `cd frontend && npx playwright install chromium && npm run e2e` (details in
-`frontend/README.md`; `E2E_BASE_URL=http://localhost` targets the Docker stack).
+## Testing
 
-### Swapping to Azure Service Bus
+```bash
+cd backend && python -m pytest        # 154 tests
+cd frontend && npm test -- --run      # 57 tests (Vitest)
+cd frontend && npx playwright install chromium && npm run e2e
+```
 
-The queue is broker-shaped (async, leased receive, explicit ack, at-least-once, idempotent by `batchId`). To move off
-the in-memory queue:
+The Playwright e2e drives a host and a player in separate browser contexts (login, create, join, start, pull,
+results) against a running stack; set `E2E_BASE_URL=http://localhost` to target the Docker stack.
 
-1. Add one file, `backend/app/queue/azure_service_bus.py`, with `AzureServiceBusEventQueue` implementing the
-   `EventQueue` Protocol (`start`, `close`, `enqueue`, `receive_batch`, `ack`, `abandon`) on the `azure-servicebus` async SDK.
-2. Add its `elif` branch in `backend/app/queue/factory.py`.
-3. Set `QUEUE_BACKEND=azure_service_bus`, `AZURE_SERVICEBUS_CONNECTION_STRING` and `AZURE_SERVICEBUS_QUEUE_NAME`.
+## Deployment (VPS, TLS, wss)
 
-No consumer, service or domain changes are needed. Until the adapter exists the factory raises `NotImplementedError`.
+Run the Docker stack on the VPS and put a TLS-terminating reverse proxy (Caddy, Traefik, or nginx + certbot) in
+front of port 80, forwarding with WebSocket upgrade headers. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` to
+`https://<your-domain>`. API and WebSocket URLs derive from the page origin, so they become `https://` / `wss://`
+automatically; leave `VITE_API_BASE` and `VITE_WS_BASE` empty. Restrict `CORS_ORIGINS` to your origin.
 
-### VPS, TLS and wss
+## Art and assets policy
 
-Run the Docker stack on the VPS and put a TLS-terminating reverse proxy (Caddy, Traefik, or nginx + certbot) in front of
-port 80, forwarding to it with WebSocket upgrade headers. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` to
-`https://<your-domain>`. WebSocket and API URLs derive from the page origin, so they become `wss://` / `https://`
-automatically; leave `VITE_API_BASE` / `VITE_WS_BASE` empty. Restrict `CORS_ORIGINS` from `*` to your origin.
+The two mascots, Inter's **Saci** and Grêmio's **Mosqueteiro**, and the club crests are image files authored and
+committed by the project owner (under `docs/mascot-references/.../assets/` and `docs/logo-references/`). The
+application copies and displays those files; **no code draws, generates or renders the club mascots or crests**.
+This is a deliberate deviation from `prompt.md` section 1, which asks for them to be drawn in code. If you extend the
+art, add original assets or original characters, and never write code that renders the club mascots or crests.
 
-### Scaling limitation
+## How it was built
 
-Run **one process, one worker**. The in-memory queue, match registry and batch dedup are per-process, so multiple
-workers or replicas would split a match's state. Scaling out needs the Azure queue plus shared state, which is out of scope.
+Built task by task with subagent-driven development: each of the 18 plan tasks was implemented by a subagent
+(TDD), then checked by a separate reviewer before moving on. See the
+[plan](./docs/superpowers/plans/2026-11-03-corda-brava.md) and the
+[progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md).
 
----
-
-## Key design decisions (so far)
-
-- **Rope convention:** `rope ∈ [-ROPE_TARGET, +ROPE_TARGET]`, `0` = center. Negative = Inter (left), positive = Grêmio (right).
-- **Scoring:** `normalized` by default (per-player intensity, fair for uneven teams); `raw` selectable via env. Formulas in `backend/app/domain/rules.py`, unit-tested.
-- **Queue is broker-shaped:** async, leased `receive_batch`, explicit `ack`, genuine at-least-once redelivery of unacked batches. The in-memory impl honors that contract today; swapping to Azure Service Bus later is "add one `AzureServiceBusEventQueue` adapter file + flip `QUEUE_BACKEND`" with no consumer/service/domain changes.
-- **SQLite behind repository Protocols:** no sqlite types leak past the repo boundary; WAL mode; writes serialized through a single lock.
-- Full rationale: [`docs/superpowers/specs/2026-11-03-corda-brava-design.md`](./docs/superpowers/specs/2026-11-03-corda-brava-design.md).
-
----
-
-## Art & assets policy (important)
-
-The two mascots — Inter's **Saci** and Grêmio's **Mosqueteiro** — and the club crests are **image files authored and committed by the project owner** (under `docs/mascot-references/.../assets/` and `docs/logo-references/`). The application **copies and displays those files**; **no code draws, generates, or renders the club mascots or crests**. This keeps the project self-contained with the owner's own assets and avoids any code-level reproduction of the characters. **Deliberate deviation from `prompt.md` §1:** the spec asks for the mascots/crests to be drawn in code; this project instead uses the owner-authored image files above. If you extend the art, add original assets or original characters — do not write code that renders the club mascots/crests.
-
----
-
-## How this project is being built
-
-Work is executed **task-by-task via dispatched subagents** (plan → implement → review → fix-loop → commit), tracked in the SDD progress ledger. If you're picking this up in a new session, read **`CLAUDE.md`** next — it explains exactly how to resume and keep the docs/ledger current.
+**Status:** all 18 plan tasks are done; the visual polish phase (pixel design system, animated stadium scene,
+chiptune SFX) is still in progress. The Docker setup has not been run yet, because Docker was unavailable in the
+build environment; local dev and the Playwright e2e were verified against the Vite stack.
