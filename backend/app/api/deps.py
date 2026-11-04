@@ -6,7 +6,7 @@ tests may pre-set ``app.state.container`` or use ``app.dependency_overrides[get_
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
@@ -31,6 +31,8 @@ class Container:
     queue: EventQueue
     registry: MatchRegistry
     service: MatchService
+    # shortcut: per-process batchId->expiry (monotonic); swap for Redis when scaled out
+    seen_batches: dict[str, float] = field(default_factory=dict)
 
 
 def _db_path(settings: Settings) -> str:
