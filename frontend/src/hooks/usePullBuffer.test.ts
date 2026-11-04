@@ -29,6 +29,7 @@ beforeEach(() => {
 afterEach(() => {
   unmount();
   vi.useRealTimers();
+  Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
 });
 
 describe("usePullBuffer", () => {
@@ -84,14 +85,73 @@ describe("usePullBuffer", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("uses sendBeacon when hidden", () => {
+  const hide = () => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  const mockBeacon = () => {
     const beacon = vi.fn().mockReturnValue(true);
     Object.defineProperty(navigator, "sendBeacon", { value: beacon, configurable: true });
-    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    return beacon;
+  };
+
+  it("uses sendBeacon when hidden, with a JSON blob body", async () => {
+    const beacon = mockBeacon();
     tap(2);
-    document.dispatchEvent(new Event("visibilitychange"));
+    hide();
     expect(beacon).toHaveBeenCalledTimes(1);
     expect(beacon.mock.calls[0][0]).toBe("/api/matches/m/pulls");
-    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    const blob = beacon.mock.calls[0][1] as Blob;
+    expect(blob.type).toBe("application/json");
+    const body = JSON.parse(await blob.text());
+    expect(Object.keys(body).sort()).toEqual(["batchId", "clientTs", "count", "playerId", "playerToken"]);
+    expect(body.count).toBe(2);
+  });
+
+  it("resends the beaconed batchId on the next interval", async () => {
+    const beacon = mockBeacon();
+    tap(2);
+    hide();
+    const sent = JSON.parse(await (beacon.mock.calls[0][1] as Blob).text());
+    await tick();
+    expect(send.mock.calls[0][1].batchId).toBe(sent.batchId);
+    expect(send.mock.calls[0][1].count).toBe(2);
+  });
+
+  it("does not start a second POST while one is in flight", async () => {
+    let done!: () => void;
+    send.mockReturnValueOnce(new Promise((r) => { done = () => r({ accepted: 1 }); }));
+    tap(1);
+    await tick();
+    tap(1);
+    await tick();
+    expect(send).toHaveBeenCalledTimes(1);
+    done();
+    await tick();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][1].count).toBe(1);
+  });
+
+  it("drops a 422 batch and sends later taps as a new batch", async () => {
+    send.mockRejectedValueOnce(new ApiError(422, "x"));
+    tap(3);
+    await tick();
+    tap(2);
+    await tick();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][1].count).toBe(2);
+    expect(send.mock.calls[1][1].batchId).not.toBe(send.mock.calls[0][1].batchId);
+  });
+
+  it("stops sending after 409 but keeps counting taps", async () => {
+    send.mockRejectedValueOnce(new ApiError(409, "x"));
+    tap(4);
+    await tick();
+    tap(2);
+    await tick();
+    hide();
+    await tick();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(hook.displayCount).toBe(6);
   });
 });

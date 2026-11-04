@@ -19,10 +19,14 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
   // Batch sent (or beaconed) but not yet confirmed; resent with the SAME batchId until 2xx.
   const unacked = useRef<{ count: number; batchId: string } | null>(null);
   const inflight = useRef(false);
+  const stopped = useRef(false); // set after 401/403/409: no more POSTs until reconfigured
   const cfg = useRef({ matchId, playerId, playerToken });
   useEffect(() => {
     cfg.current = { matchId, playerId, playerToken };
   });
+  useEffect(() => {
+    stopped.current = false;
+  }, [enabled, matchId, playerId, playerToken]);
 
   const takeBatch = () => {
     if (!unacked.current && pending.current > 0) {
@@ -41,7 +45,7 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
   });
 
   const flush = useCallback(async () => {
-    if (inflight.current) return;
+    if (inflight.current || stopped.current) return;
     const batch = takeBatch();
     if (!batch) return;
     inflight.current = true;
@@ -49,15 +53,22 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
       await sendPulls(cfg.current.matchId, body(batch));
       unacked.current = null;
     } catch (e) {
-      // 401/403/409: bad token or match not running; retrying is futile, drop the batch.
-      if (e instanceof ApiError && [401, 403, 409].includes(e.status)) unacked.current = null;
-      // otherwise keep the batch for an idempotent resend
+      // 4xx (except 408/429) is a poison batch: drop it. 401/403/409 (bad token / match not running) also stop sending.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) {
+        unacked.current = null;
+        if ([401, 403, 409].includes(e.status)) {
+          stopped.current = true;
+          pending.current = 0;
+        }
+      }
+      // otherwise (network, 5xx, 408, 429) keep the batch for an idempotent resend
     } finally {
       inflight.current = false;
     }
   }, []);
 
   const flushOnHide = useCallback(() => {
+    if (stopped.current) return;
     const batch = takeBatch(); // stays unacked: a beacon cannot confirm success
     if (!batch) return;
     const url = `${API_BASE}/api/matches/${cfg.current.matchId}/pulls`;
