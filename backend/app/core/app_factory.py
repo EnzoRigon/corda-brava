@@ -10,18 +10,35 @@ Centralises app construction so:
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.deps import get_container
 from app.api.health import router as health_router
+from app.api.host import protected as host_protected_router
+from app.api.host import router as host_router
 from app.api.player import router as player_router
+from app.api.ws import router as ws_router
 from app.core.logging import configure_logging
 from app.core.settings import Settings
 from app.services.match_service import ConflictError, MatchNotFoundError
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    c = get_container(app)  # eager build: DB bootstrap + queue/registry/service
+    await c.queue.start()
+    try:
+        yield
+    finally:
+        await c.registry.stop_all()
+        await c.queue.close()
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -39,10 +56,11 @@ def create_app(settings: Settings) -> FastAPI:
         title="Corda Brava",
         description="Themed tug-of-war party game backend.",
         version="0.1.0",
+        lifespan=_lifespan,
     )
 
     app.state.settings = settings
-    app.state.container = None  # built lazily by app.api.deps.get_container
+    app.state.container = None  # built in the lifespan (lazy fallback: deps.get_container)
 
     @app.exception_handler(ConflictError)
     async def _conflict(_: Request, exc: ConflictError) -> JSONResponse:
@@ -69,6 +87,9 @@ def create_app(settings: Settings) -> FastAPI:
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(health_router)
     app.include_router(player_router)
+    app.include_router(host_router)
+    app.include_router(host_protected_router)
+    app.include_router(ws_router)
 
     # Root /api router — empty now; later tasks attach sub-routers here.
     from fastapi import APIRouter  # local import to keep top-level clean

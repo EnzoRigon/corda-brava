@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     # ── API ───────────────────────────────────────────────────────────────────
     CORS_ORIGINS: str = "*"  # comma-separated list or wildcard
+    PUBLIC_BASE_URL: str = "http://localhost:5173"  # origin phones use; joinUrl = base/j/<id>
 
     # ── Game timing ───────────────────────────────────────────────────────────
     TICK_INTERVAL_MS: int = 500

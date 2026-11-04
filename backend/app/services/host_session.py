@@ -27,7 +27,9 @@ def issue_host_token(settings: Settings) -> tuple[str, datetime]:
 def verify_host_token(token: str, settings: Settings) -> bool:
     """True only for a valid, unexpired token with role=host. Never raises."""
     try:
-        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[_ALG])
+        claims = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[_ALG], options={"require": ["exp"]}
+        )
     except Exception:  # noqa: BLE001 - any failure means invalid
         return False
     return claims.get("role") == "host"

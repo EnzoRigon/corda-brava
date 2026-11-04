@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import jwt
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.auth import require_host, verify_ws_token
-from app.core.settings import Settings, get_settings
+from app.api.deps import container_dep
+from app.core.settings import Settings
 from app.services.host_session import check_password, issue_host_token, verify_host_token
 
 S = Settings(HOST_PASSWORD="Pässwörd", SECRET_KEY="k" * 32, HOST_TOKEN_TTL_SECONDS=60)
@@ -48,6 +50,17 @@ def test_wrong_role():
     assert not verify_host_token(token, S)
 
 
+def test_token_without_exp_rejected():
+    token = jwt.encode({"role": "host"}, S.SECRET_KEY, algorithm="HS256")
+    assert not verify_host_token(token, S)
+
+
+def test_other_algorithms_rejected():
+    claims = {"role": "host", "exp": int(datetime.now(UTC).timestamp()) + 60}
+    assert not verify_host_token(jwt.encode(claims, None, algorithm="none"), S)
+    assert not verify_host_token(jwt.encode(claims, S.SECRET_KEY, algorithm="HS512"), S)
+
+
 def test_verify_ws_token():
     token, _ = issue_host_token(S)
     assert verify_ws_token(token, S)
@@ -56,7 +69,7 @@ def test_verify_ws_token():
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.dependency_overrides[get_settings] = lambda: S
+    app.dependency_overrides[container_dep] = lambda: SimpleNamespace(settings=S)
 
     @app.get("/x", dependencies=[Depends(require_host)])
     def x() -> dict:

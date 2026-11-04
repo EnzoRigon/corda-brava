@@ -59,7 +59,7 @@ def test_bucketing_and_peak():
     assert len(a.pullsPerSecond) == 10  # full duration on timeout
     assert a.peak.model_dump() == {"value": 10, "t": 3}
     assert a.totalPulls.model_dump() == {"overall": 19, "inter": 10, "gremio": 9}
-    assert a.finalRope == -30.0 and a.result == "inter" and a.endReason == "timeout"
+    assert a.finalRope == -30.0 and a.result == "INTER" and a.endReason == "timeout"
 
 
 def test_best_worst_and_percentages():

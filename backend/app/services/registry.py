@@ -29,7 +29,7 @@ class MatchRegistry:
             try:
                 await cb(payload)
             except Exception:  # noqa: BLE001 - dead socket etc.
-                self._listeners[match_id].discard(cb)
+                self._listeners.get(match_id, set()).discard(cb)
 
     def is_running(self, match_id: str) -> bool:
         task = self._tasks.get(match_id)
@@ -51,6 +51,10 @@ class MatchRegistry:
                 log.error("consumer loop for %s crashed", match_id, exc_info=t.exception())
 
         task.add_done_callback(_done)
+
+    async def stop_all(self) -> None:
+        for match_id in list(self._tasks):
+            await self.stop_loop(match_id)
 
     async def stop_loop(self, match_id: str) -> None:
         task = self._tasks.pop(match_id, None)

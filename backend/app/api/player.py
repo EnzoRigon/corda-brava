@@ -58,9 +58,10 @@ def public_info(match_id: str, c: ContainerDep) -> PublicMatch:
 
 
 @router.post("/{match_id}/players", response_model=JoinResponse)
-def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
+async def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
     m = _match(c, match_id)
     player = c.players.get_player_by_device(match_id, body.deviceId)
+    is_new = False
     if player is None:
         if m.status is not MatchStatus.LOBBY:
             # Both policies reject new joins; spectator mode is a frontend concern (see report).
@@ -76,11 +77,21 @@ def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
         )
         try:
             player = c.players.add_player(player)
+            is_new = True
         except UniqueConstraintError:  # lost a race with the same device
             existing = c.players.get_player_by_device(match_id, body.deviceId)
             if existing is None:
                 raise HTTPException(status_code=500, detail="join failed") from None
             player = existing
+    if is_new:
+        await c.registry.broadcast(
+            match_id,
+            {
+                "type": "player_joined",
+                "team": player.team.value.upper(),
+                "player": {"id": player.id, "name": player.name},
+            },
+        )
     token = issue_player_token(match_id, player.id, player.device_id, c.settings)
     return JoinResponse(playerId=player.id, playerToken=token, team=player.team)
 

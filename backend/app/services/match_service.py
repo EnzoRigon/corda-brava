@@ -56,12 +56,14 @@ class MatchService:
             )
         return duration_s
 
-    def create_match(self, duration_s: int | None = None) -> Match:
+    def create_match(
+        self, duration_s: int | None = None, balance_mode: BalanceMode | None = None
+    ) -> Match:
         s = self._settings
         config = MatchConfig(
             duration_s=self._check_duration(duration_s or s.DEFAULT_MATCH_DURATION_S),
             rope_target=s.ROPE_TARGET,
-            balance_mode=BalanceMode(s.TEAM_BALANCE_MODE),
+            balance_mode=balance_mode or BalanceMode(s.TEAM_BALANCE_MODE),
             inter=TeamConfig(
                 id="inter", name="Inter", primary_color="#E5050F", secondary_color="#FFFFFF"
             ),

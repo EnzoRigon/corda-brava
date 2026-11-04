@@ -88,7 +88,7 @@ def compute_analytics(
         )
 
     return AnalyticsPayload(
-        result=match.result.value if match.result else None,
+        result=match.result.value.upper() if match.result else None,
         endReason=match.end_reason.value if match.end_reason else None,
         durationS=duration,
         totalPlayers=len(players),

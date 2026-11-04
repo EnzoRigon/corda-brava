@@ -1,6 +1,6 @@
 """App-scoped singletons (settings, repos, queue, registry, service) for ``Depends``.
 
-The container is built lazily on first use and cached on ``app.state.container``;
+The container is built in the app lifespan (or lazily on first use), cached on app.state.container;
 tests may pre-set ``app.state.container`` or use ``app.dependency_overrides[get_container]``.
 """
 
