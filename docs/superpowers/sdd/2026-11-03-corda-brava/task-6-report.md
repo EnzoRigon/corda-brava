@@ -1,6 +1,6 @@
 # Task 6 Report — MatchService + ConsumerLoop + MatchRegistry
 
-**Status:** DONE. 86 tests pass (78 prior + 8 new), ruff and black clean.
+**Status:** DONE. Commit 2b366c7. 86 tests pass (78 prior + 8 new), ruff and black clean.
 
 ## Files
 - `backend/app/services/match_service.py` (service, `ConflictError`, `MatchNotFoundError`)
