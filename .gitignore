@@ -20,3 +20,7 @@ build/
 
 # Secrets
 .env
+
+# Playwright
+playwright-report/
+test-results/

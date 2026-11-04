@@ -33,9 +33,9 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 16 | Host match rope scene (interpolated knot, timer) + results with analytics charts | ✅ reviewed |
 | 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
 
-**Current test count:** 144 passing (backend), 49 passing (frontend). Lint (ruff + black) clean.
+**Current test count:** 144 passing (backend), 49 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
 
-**Backend (Phases A + B) and frontend (Phase C) complete.** **Not yet built:** Task 18 (end-to-end test + run README). Docker files exist but `docker compose up` has not been run yet. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**All 18 tasks are built.** Task 18 added the READMEs and a Playwright end-to-end flow (green against the Vite dev stack). Docker (`docker compose up`) has **not** been run: Docker was unavailable in the build environment. See the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for details.
 
 ---
 
@@ -66,28 +66,75 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 
 ---
 
-## Running the backend (dev)
+## Running it
 
-Requires Python 3.11+ (developed on 3.14).
+### Local dev (two terminals, or `.claude/launch.json` configs `backend` + `frontend`)
 
 ```bash
-cd backend
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-pip install pytest pytest-asyncio ruff black   # dev tools
-
-# run the tests
-python -m pytest -v
-
-# run the API (health check only until the routers land)
-uvicorn app.core.app_factory:create_app --factory --reload
-# then: curl http://localhost:8000/health  ->  {"status":"ok"}
+# backend (see backend/README.md): venv + pip install -e .
+cd backend && uvicorn app.core.app_factory:create_app --factory --reload   # :8000
+# frontend
+cd frontend && npm install && npm run dev                                   # :5173, proxies /api + WS
 ```
 
-Configuration is environment-driven via `pydantic-settings` (`backend/app/core/settings.py`); defaults match `prompt.md` §4. A root `.env.example` documenting every variable lands in Phase D.
+Open http://localhost:5173/host/login. Default host password: see `HOST_PASSWORD` in settings / `.env.example`.
 
-> The full `docker compose up` single-port stack, the frontend, and the LAN/QR run instructions are specified in `prompt.md` §4b / §16–§18 and will be filled in as those phases are built.
+### Docker (prod, single port)
+
+```bash
+cp .env.example .env        # set HOST_PASSWORD and SECRET_KEY (python -c "import secrets; print(secrets.token_hex(32))")
+docker compose up -d --build
+# open http://<host>/        (nginx serves the SPA and proxies /api + WS; SQLite lives on a named volume)
+```
+
+### Docker (dev, hot reload)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # needs Compose >= 2.24
+```
+
+### LAN play / QR code
+
+Phones cannot open `localhost`. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` in `.env` to `http://<LAN-IP>` (add `:PORT`
+if `PUBLIC_PORT` is not 80) before building, so the QR points at an address phones can reach.
+
+### Host and player flow
+
+1. Host opens `/host/login`, enters the password, picks duration (30-600 s) and scoring, and creates a match.
+2. The lobby shows a QR code and live roster. Players scan it (`/j/<matchId>`), enter a name, pick Inter or Grêmio
+   (one player per device).
+3. Host clicks **Iniciar partida**. Players tap **PUXAR**; the rope moves live on the host screen.
+4. The match ends when a team drags the rope to its side, or on timeout (draw). Players see a result screen;
+   the host sees a banner, charts and a leaderboard, and can start **Nova Partida**.
+
+### End-to-end test
+
+With the stack running: `cd frontend && npx playwright install chromium && npm run e2e` (details in
+`frontend/README.md`; `E2E_BASE_URL=http://localhost` targets the Docker stack).
+
+### Swapping to Azure Service Bus
+
+The queue is broker-shaped (async, leased receive, explicit ack, at-least-once, idempotent by `batchId`). To move off
+the in-memory queue:
+
+1. Add one file, `backend/app/queue/azure_service_bus.py`, with `AzureServiceBusEventQueue` implementing the
+   `EventQueue` Protocol (`start`, `close`, `enqueue`, `receive_batch`, `ack`, `abandon`) on the `azure-servicebus` async SDK.
+2. Add its `elif` branch in `backend/app/queue/factory.py`.
+3. Set `QUEUE_BACKEND=azure_service_bus`, `AZURE_SERVICEBUS_CONNECTION_STRING` and `AZURE_SERVICEBUS_QUEUE_NAME`.
+
+No consumer, service or domain changes are needed. Until the adapter exists the factory raises `NotImplementedError`.
+
+### VPS, TLS and wss
+
+Run the Docker stack on the VPS and put a TLS-terminating reverse proxy (Caddy, Traefik, or nginx + certbot) in front of
+port 80, forwarding to it with WebSocket upgrade headers. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` to
+`https://<your-domain>`. WebSocket and API URLs derive from the page origin, so they become `wss://` / `https://`
+automatically; leave `VITE_API_BASE` / `VITE_WS_BASE` empty. Restrict `CORS_ORIGINS` from `*` to your origin.
+
+### Scaling limitation
+
+Run **one process, one worker**. The in-memory queue, match registry and batch dedup are per-process, so multiple
+workers or replicas would split a match's state. Scaling out needs the Azure queue plus shared state, which is out of scope.
 
 ---
 
