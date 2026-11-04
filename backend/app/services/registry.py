@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
+
+log = logging.getLogger(__name__)
 
 
 class MatchRegistry:
@@ -32,14 +35,26 @@ class MatchRegistry:
         task = self._tasks.get(match_id)
         return task is not None and not task.done()
 
+    def clear(self, match_id: str) -> None:
+        """Drop all listeners for a finished/cancelled match."""
+        self._listeners.pop(match_id, None)
+
     def start_loop(self, match_id: str, coro: Awaitable[None]) -> None:
-        self._tasks[match_id] = asyncio.ensure_future(coro)
+        task = asyncio.ensure_future(coro)
+        self._tasks[match_id] = task
+
+        def _done(t: asyncio.Task[None]) -> None:
+            if self._tasks.get(match_id) is t:
+                del self._tasks[match_id]
+                self.clear(match_id)
+            if not t.cancelled() and t.exception() is not None:
+                log.error("consumer loop for %s crashed", match_id, exc_info=t.exception())
+
+        task.add_done_callback(_done)
 
     async def stop_loop(self, match_id: str) -> None:
         task = self._tasks.pop(match_id, None)
         if task is not None and not task.done():
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.wait([task])  # unlike awaiting, never masks our own cancellation
+        self.clear(match_id)

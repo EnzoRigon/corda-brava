@@ -1,0 +1,613 @@
+diff --git a/backend/app/services/consumer.py b/backend/app/services/consumer.py
+new file mode 100644
+index 0000000..82f0327
+--- /dev/null
++++ b/backend/app/services/consumer.py
+@@ -0,0 +1,130 @@
++"""Single-writer consumer loop: the only code that mutates a running match."""
++
++from __future__ import annotations
++
++import asyncio
++from collections.abc import Callable
++from datetime import UTC, datetime
++
++from app.core.settings import Settings
++from app.domain.entities import MatchState, TickInput
++from app.domain.enums import MatchStatus, Team
++from app.domain.rules import apply_pulls, check_win, resolve_result
++from app.queue.interfaces import EventQueue
++from app.repositories.interfaces import EventRepository, MatchRepository, PlayerRepository
++from app.services.registry import Broadcast
++
++MAX_BATCH_MESSAGES = 500
++
++
++def utcnow() -> datetime:
++    return datetime.now(UTC)
++
++
++class ConsumerLoop:
++    def __init__(
++        self,
++        match_id: str,
++        *,
++        matches: MatchRepository,
++        players: PlayerRepository,
++        events: EventRepository,
++        queue: EventQueue,
++        settings: Settings,
++        broadcast: Broadcast,
++        clock: Callable[[], datetime] = utcnow,
++    ) -> None:
++        self.match_id = match_id
++        self._matches, self._players, self._events = matches, players, events
++        self._queue, self._settings = queue, settings
++        self._broadcast, self._clock = broadcast, clock
++        self._scores = {Team.INTER: 0, Team.GREMIO: 0}
++        for e in events.list_events(match_id):  # resume totals after a restart
++            self._scores[e.team] += e.count
++
++    async def run(self) -> None:
++        """Tick until the match finishes; cancel the task to stop early."""
++        while not await self.tick():
++            await asyncio.sleep(self._settings.TICK_INTERVAL_MS / 1000)
++
++    async def tick(self) -> bool:
++        """One tick. Returns True once the match is FINISHED."""
++        match = self._matches.get_match(self.match_id)
++        if match is None or match.status is not MatchStatus.RUNNING:
++            return True
++        cfg, now = match.config, self._clock()
++
++        msgs = await self._queue.receive_batch(MAX_BATCH_MESSAGES, 0)
++        foreign = [m for m in msgs if m.payload.match_id != self.match_id]
++        if foreign:
++            await self._queue.abandon(foreign)
++        mine = [m for m in msgs if m.payload.match_id == self.match_id]
++
++        delta = {Team.INTER: 0, Team.GREMIO: 0}
++        for m in mine:
++            ev = m.payload
++            # dedup: a redelivered/repeated batch_id has no effect (but is still acked)
++            if self._events.event_exists(self.match_id, ev.batch_id):
++                continue
++            self._events.add_event(ev)
++            delta[ev.team] += ev.count
++        for t, n in delta.items():
++            self._scores[t] += n
++
++        roster = self._players.list_players(self.match_id)
++        tick_in = TickInput(
++            pulls_inter=delta[Team.INTER],
++            pulls_gremio=delta[Team.GREMIO],
++            players_inter=sum(p.team is Team.INTER for p in roster),
++            players_gremio=sum(p.team is Team.GREMIO for p in roster),
++        )
++        state = MatchState(
++            match_id=match.id,
++            status=match.status,
++            rope_position=match.rope_position,
++            started_at=match.started_at,
++            ends_at=match.ends_at,
++        )
++        state = apply_pulls(
++            state,
++            tick_in,
++            balance_mode=cfg.balance_mode,
++            pull_unit=self._settings.PULL_UNIT,
++            rope_target=cfg.rope_target,
++        )
++        timed_out = match.ends_at is not None and now >= match.ends_at
++        won = check_win(state.rope_position, cfg.rope_target) is not None
++        match.rope_position = state.rope_position
++        finished = won or timed_out
++        if finished:
++            match.result, match.end_reason = resolve_result(
++                state, timed_out=timed_out, rope_target=cfg.rope_target
++            )
++            match.status = MatchStatus.FINISHED
++        self._matches.update_match(match)  # durable before ack
++        if mine:
++            await self._queue.ack(mine)
++
++        remaining = max(0.0, (match.ends_at - now).total_seconds()) if match.ends_at else 0.0
++        await self._broadcast(
++            {
++                "type": "tick",
++                "rope": match.rope_position,
++                "remainingS": remaining,
++                "delta": {"inter": delta[Team.INTER], "gremio": delta[Team.GREMIO]},
++                "scores": {
++                    "inter": {"pulls": self._scores[Team.INTER]},
++                    "gremio": {"pulls": self._scores[Team.GREMIO]},
++                },
++            }
++        )
++        if finished:
++            await self._broadcast(
++                {
++                    "type": "ended",
++                    "result": match.result.value.upper(),
++                    "endReason": match.end_reason.value,
++                    "finalRope": match.rope_position,
++                }
++            )
++        return finished
+diff --git a/backend/app/services/match_service.py b/backend/app/services/match_service.py
+new file mode 100644
+index 0000000..79ee7ba
+--- /dev/null
++++ b/backend/app/services/match_service.py
+@@ -0,0 +1,129 @@
++"""Match lifecycle state machine: LOBBY -> RUNNING -> FINISHED."""
++
++from __future__ import annotations
++
++import secrets
++import string
++from collections.abc import Callable
++from datetime import UTC, datetime, timedelta
++
++from app.core.settings import Settings
++from app.domain.entities import Match, MatchConfig, MatchState, TeamConfig
++from app.domain.enums import BalanceMode, MatchStatus
++from app.queue.interfaces import EventQueue
++from app.repositories.interfaces import EventRepository, MatchRepository, PlayerRepository
++from app.services.consumer import ConsumerLoop, utcnow
++from app.services.registry import MatchRegistry
++
++_ALPHABET = string.ascii_uppercase + string.digits
++
++
++class ConflictError(Exception):
++    """Illegal state transition; the API layer maps this to HTTP 409."""
++
++
++class MatchNotFoundError(Exception):
++    """Unknown match id; the API layer maps this to HTTP 404."""
++
++
++class MatchService:
++    def __init__(
++        self,
++        *,
++        matches: MatchRepository,
++        players: PlayerRepository,
++        events: EventRepository,
++        queue: EventQueue,
++        registry: MatchRegistry,
++        settings: Settings,
++        clock: Callable[[], datetime] = utcnow,
++    ) -> None:
++        self._matches, self._players, self._events = matches, players, events
++        self._queue, self._registry, self._settings = queue, registry, settings
++        self._clock = clock
++
++    def _get(self, match_id: str) -> Match:
++        match = self._matches.get_match(match_id)
++        if match is None:
++            raise MatchNotFoundError(match_id)
++        return match
++
++    def _check_duration(self, duration_s: int) -> int:
++        s = self._settings
++        if not s.MATCH_DURATION_MIN_S <= duration_s <= s.MATCH_DURATION_MAX_S:
++            raise ValueError(
++                f"duration_s must be in [{s.MATCH_DURATION_MIN_S}, {s.MATCH_DURATION_MAX_S}]"
++            )
++        return duration_s
++
++    def create_match(self, duration_s: int | None = None) -> Match:
++        s = self._settings
++        config = MatchConfig(
++            duration_s=self._check_duration(duration_s or s.DEFAULT_MATCH_DURATION_S),
++            rope_target=s.ROPE_TARGET,
++            balance_mode=BalanceMode(s.TEAM_BALANCE_MODE),
++            inter=TeamConfig(
++                id="inter", name="Inter", primary_color="#E5050F", secondary_color="#FFFFFF"
++            ),
++            gremio=TeamConfig(
++                id="gremio", name="Grêmio", primary_color="#0D80BF", secondary_color="#000000"
++            ),
++        )
++        match_id = "".join(secrets.choice(_ALPHABET) for _ in range(6))
++        return self._matches.create_match(Match(id=match_id, config=config))
++
++    def get_match_view(self, match_id: str) -> MatchState:
++        m = self._get(match_id)
++        remaining = float(m.config.duration_s)
++        if m.status is MatchStatus.RUNNING and m.ends_at:
++            remaining = max(0.0, (m.ends_at - self._clock()).total_seconds())
++        elif m.status is MatchStatus.FINISHED:
++            remaining = 0.0
++        return MatchState(
++            match_id=m.id,
++            status=m.status,
++            rope_position=m.rope_position,
++            started_at=m.started_at,
++            ends_at=m.ends_at,
++            remaining_s=remaining,
++            result=m.result,
++            end_reason=m.end_reason,
++        )
++
++    def update_duration(self, match_id: str, duration_s: int) -> Match:
++        m = self._get(match_id)
++        if m.status is not MatchStatus.LOBBY:
++            raise ConflictError("duration can only change in LOBBY")
++        m.config.duration_s = self._check_duration(duration_s)
++        return self._matches.update_match(m)
++
++    def start(self, match_id: str) -> Match:
++        """LOBBY -> RUNNING and spin up the consumer task (needs a running event loop)."""
++        m = self._get(match_id)
++        if m.status is not MatchStatus.LOBBY:
++            raise ConflictError(f"cannot start a match in {m.status.value}")
++        m.status = MatchStatus.RUNNING
++        m.started_at = self._clock().astimezone(UTC)
++        m.ends_at = m.started_at + timedelta(seconds=m.config.duration_s)
++        m = self._matches.update_match(m)
++        loop = ConsumerLoop(
++            match_id,
++            matches=self._matches,
++            players=self._players,
++            events=self._events,
++            queue=self._queue,
++            settings=self._settings,
++            broadcast=lambda payload: self._registry.broadcast(match_id, payload),
++            clock=self._clock,
++        )
++        self._registry.start_loop(match_id, loop.run())
++        return m
++
++    async def cancel(self, match_id: str) -> Match:
++        """Tear down the loop; an unfinished match becomes FINISHED with no result."""
++        m = self._get(match_id)
++        await self._registry.stop_loop(match_id)
++        if m.status is not MatchStatus.FINISHED:
++            m.status = MatchStatus.FINISHED
++            m = self._matches.update_match(m)
++        return m
+diff --git a/backend/app/services/registry.py b/backend/app/services/registry.py
+new file mode 100644
+index 0000000..e192fe6
+--- /dev/null
++++ b/backend/app/services/registry.py
+@@ -0,0 +1,45 @@
++"""Per-match registry: running consumer tasks + broadcast callback sets."""
++
++from __future__ import annotations
++
++import asyncio
++from collections.abc import Awaitable, Callable
++from typing import Any
++
++Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
++
++
++class MatchRegistry:
++    def __init__(self) -> None:
++        self._tasks: dict[str, asyncio.Task[None]] = {}
++        self._listeners: dict[str, set[Broadcast]] = {}
++
++    def add_listener(self, match_id: str, cb: Broadcast) -> None:
++        self._listeners.setdefault(match_id, set()).add(cb)
++
++    def remove_listener(self, match_id: str, cb: Broadcast) -> None:
++        self._listeners.get(match_id, set()).discard(cb)
++
++    async def broadcast(self, match_id: str, payload: dict[str, Any]) -> None:
++        """Send to every listener; a failing listener is dropped, never breaks the loop."""
++        for cb in list(self._listeners.get(match_id, ())):
++            try:
++                await cb(payload)
++            except Exception:  # noqa: BLE001 - dead socket etc.
++                self._listeners[match_id].discard(cb)
++
++    def is_running(self, match_id: str) -> bool:
++        task = self._tasks.get(match_id)
++        return task is not None and not task.done()
++
++    def start_loop(self, match_id: str, coro: Awaitable[None]) -> None:
++        self._tasks[match_id] = asyncio.ensure_future(coro)
++
++    async def stop_loop(self, match_id: str) -> None:
++        task = self._tasks.pop(match_id, None)
++        if task is not None and not task.done():
++            task.cancel()
++            try:
++                await task
++            except asyncio.CancelledError:
++                pass
+diff --git a/backend/tests/services/test_consumer.py b/backend/tests/services/test_consumer.py
+new file mode 100644
+index 0000000..2403912
+--- /dev/null
++++ b/backend/tests/services/test_consumer.py
+@@ -0,0 +1,149 @@
++"""Consumer loop tests: real SQLite (tmp), in-memory queue, fake clock, no sleeping."""
++
++from __future__ import annotations
++
++import asyncio
++import uuid
++from datetime import UTC, datetime, timedelta
++from pathlib import Path
++
++import pytest
++
++from app.core.settings import Settings
++from app.domain.entities import Player, PullEvent
++from app.domain.enums import EndReason, MatchResult, MatchStatus, Team
++from app.queue.memory import InMemoryEventQueue
++from app.repositories.sqlite.bootstrap import bootstrap_db
++from app.repositories.sqlite.connection import close_connection
++from app.repositories.sqlite.event_repo import SQLiteEventRepository
++from app.repositories.sqlite.match_repo import SQLiteMatchRepository
++from app.repositories.sqlite.player_repo import SQLitePlayerRepository
++from app.services.consumer import ConsumerLoop
++from app.services.match_service import MatchService
++from app.services.registry import MatchRegistry
++
++T0 = datetime(2025, 1, 1, tzinfo=UTC)
++
++
++class Env:
++    def __init__(self, tmp_path: Path) -> None:
++        self.db = tmp_path / "t.db"
++        bootstrap_db(self.db)
++        self.now = T0
++        self.settings = Settings(ROPE_TARGET=5, TEAM_BALANCE_MODE="raw", TICK_INTERVAL_MS=1)
++        self.matches = SQLiteMatchRepository(self.db)
++        self.players = SQLitePlayerRepository(self.db)
++        self.events = SQLiteEventRepository(self.db)
++        self.queue = InMemoryEventQueue(lease_timeout_s=0.01)
++        self.registry = MatchRegistry()
++        self.svc = MatchService(
++            matches=self.matches,
++            players=self.players,
++            events=self.events,
++            queue=self.queue,
++            registry=self.registry,
++            settings=self.settings,
++            clock=lambda: self.now,
++        )
++        self.sent: list[dict] = []
++        self.match = self.svc.create_match(duration_s=60)
++        self.p = {}
++        for team in Team:
++            p = Player(
++                id=str(uuid.uuid4()),
++                match_id=self.match.id,
++                device_id=team.value,
++                name=team.value,
++                team=team,
++                token="t",
++            )
++            self.players.add_player(p)
++            self.p[team] = p
++
++    def force_running(self) -> ConsumerLoop:
++        """Mark RUNNING in the repo only (no background task); tests drive tick()."""
++        m = self.matches.get_match(self.match.id)
++        m.status = MatchStatus.RUNNING
++        m.started_at, m.ends_at = T0, T0 + timedelta(seconds=60)
++        self.matches.update_match(m)
++
++        async def bc(payload: dict) -> None:
++            self.sent.append(payload)
++
++        return ConsumerLoop(
++            self.match.id,
++            matches=self.matches,
++            players=self.players,
++            events=self.events,
++            queue=self.queue,
++            settings=self.settings,
++            broadcast=bc,
++            clock=lambda: self.now,
++        )
++
++    async def pull(self, team: Team, count: int, batch_id: str) -> None:
++        await self.queue.enqueue(
++            PullEvent(
++                id=str(uuid.uuid4()),
++                match_id=self.match.id,
++                player_id=self.p[team].id,
++                team=team,
++                count=count,
++                client_ts=0.0,
++                batch_id=batch_id,
++            )
++        )
++
++
++@pytest.fixture()
++def env(tmp_path: Path):
++    e = Env(tmp_path)
++    yield e
++    close_connection(e.db)
++
++
++async def test_tick_persists_moves_rope_and_acks(env: Env) -> None:
++    loop = env.force_running()
++    await env.pull(Team.GREMIO, 3, "b1")
++    assert await loop.tick() is False
++    assert env.matches.get_match(env.match.id).rope_position == 3
++    assert len(env.events.list_events(env.match.id)) == 1
++    await asyncio.sleep(0.03)  # past the lease: an acked message must not return
++    assert await env.queue.receive_batch(10, 0) == []
++    tick = env.sent[-1]
++    assert tick["type"] == "tick" and tick["rope"] == 3
++    assert tick["delta"] == {"inter": 0, "gremio": 3}
++    assert tick["scores"]["gremio"]["pulls"] == 3 and tick["remainingS"] == 60
++
++
++async def test_duplicate_batch_id_has_no_extra_effect(env: Env) -> None:
++    loop = env.force_running()
++    await env.pull(Team.GREMIO, 2, "dup")
++    await loop.tick()
++    await env.pull(Team.GREMIO, 2, "dup")  # redelivery
++    await loop.tick()
++    assert env.matches.get_match(env.match.id).rope_position == 2
++    assert len(env.events.list_events(env.match.id)) == 1
++
++
++async def test_win_finishes_and_run_stops(env: Env) -> None:
++    loop = env.force_running()
++    await env.pull(Team.GREMIO, 5, "w")
++    await loop.run()  # returns because the match finished
++    m = env.matches.get_match(env.match.id)
++    assert (m.status, m.result, m.end_reason) == (
++        MatchStatus.FINISHED,
++        MatchResult.GREMIO,
++        EndReason.WIN,
++    )
++    assert env.sent[-1]["type"] == "ended" and env.sent[-1]["result"] == "GREMIO"
++
++
++async def test_timeout_is_draw(env: Env) -> None:
++    loop = env.force_running()
++    await env.pull(Team.INTER, 1, "x")
++    env.now = T0 + timedelta(seconds=61)
++    assert await loop.tick() is True
++    m = env.matches.get_match(env.match.id)
++    assert (m.result, m.end_reason) == (MatchResult.DRAW, EndReason.TIMEOUT)
++    assert env.sent[-1]["endReason"] == "timeout"
+diff --git a/backend/tests/services/test_match_service.py b/backend/tests/services/test_match_service.py
+new file mode 100644
+index 0000000..c31c3ea
+--- /dev/null
++++ b/backend/tests/services/test_match_service.py
+@@ -0,0 +1,48 @@
++"""MatchService state-machine tests."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from app.domain.enums import MatchStatus
++from app.repositories.sqlite.connection import close_connection
++from app.services.match_service import ConflictError
++from tests.services.test_consumer import T0, Env
++
++
++@pytest.fixture()
++def env(tmp_path: Path):
++    e = Env(tmp_path)
++    yield e
++    close_connection(e.db)
++
++
++async def test_start_sets_times_and_runs_loop(env: Env) -> None:
++    m = env.svc.start(env.match.id)
++    assert m.status is MatchStatus.RUNNING
++    assert m.started_at == T0 and (m.ends_at - m.started_at).total_seconds() == 60
++    assert env.registry.is_running(env.match.id)
++    await env.svc.cancel(env.match.id)
++    assert not env.registry.is_running(env.match.id)
++
++
++async def test_start_twice_conflicts(env: Env) -> None:
++    env.svc.start(env.match.id)
++    with pytest.raises(ConflictError):
++        env.svc.start(env.match.id)
++    await env.svc.cancel(env.match.id)
++
++
++async def test_update_duration_only_in_lobby(env: Env) -> None:
++    assert env.svc.update_duration(env.match.id, 90).config.duration_s == 90
++    env.svc.start(env.match.id)
++    with pytest.raises(ConflictError):
++        env.svc.update_duration(env.match.id, 100)
++    await env.svc.cancel(env.match.id)
++
++
++def test_view_lobby_remaining(env: Env) -> None:
++    v = env.svc.get_match_view(env.match.id)
++    assert v.status is MatchStatus.LOBBY and v.remaining_s == 60
+diff --git a/docs/superpowers/sdd/2026-11-03-corda-brava/task-6-brief.md b/docs/superpowers/sdd/2026-11-03-corda-brava/task-6-brief.md
+new file mode 100644
+index 0000000..053309e
+--- /dev/null
++++ b/docs/superpowers/sdd/2026-11-03-corda-brava/task-6-brief.md
+@@ -0,0 +1,16 @@
++### Task 6: Match service (state machine) + pull-consumer loop + match registry
++
++**Files:**
++- Create: `backend/app/services/match_service.py`, `backend/app/services/consumer.py`, `backend/app/services/registry.py`
++- Test: `backend/tests/services/test_match_service.py`, `backend/tests/services/test_consumer.py`
++
++**Interfaces:**
++- Consumes: repos (Task 3), queue (Task 4), rules (Task 2).
++- Produces: `MatchService` with `create_match`, `get_match_view`, `update_duration` (LOBBY only, else 409), `start` (LOBBY→RUNNING, spins consumer task), `reset`/`cancel` (tears down). State guards raise a `ConflictError` mapped to 409. `ConsumerLoop.run()`: each `TICK_INTERVAL_MS` → `receive_batch` → **dedup by batch_id via `event_exists`** → aggregate per team → `add_event` (persist) → `apply_pulls` → `check_win`/timer → update runtime (single writer) → **`ack` only after durable apply** → broadcast via injected callback → stop + set FINISHED on win/timeout. `MatchRegistry` keyed by match id (running loops + per-match broadcast callback set).
++
++- [ ] **Step 1:** Write service tests: illegal transition (start twice, patch duration while RUNNING) → ConflictError; start sets `started_at`/`ends_at`. Consumer tests (asyncio, fake queue + in-memory repos + fake clock): enqueue a batch → one tick persists event, moves rope, acks; **redelivered duplicate batch_id applied twice has no extra effect** (idempotent); rope crossing +target → FINISHED/GREMIO/WIN and loop stops; clock past `ends_at` with rope≠0 → FINISHED/DRAW/TIMEOUT.
++- [ ] **Step 2:** Run → FAIL.
++- [ ] **Step 3:** Implement service, consumer, registry. Inject broadcast callback (so loop doesn't depend on WS).
++- [ ] **Step 4:** Run → PASS.
++- [ ] **Step 5:** Commit `feat(services): match state machine + single-writer consumer loop + registry + tests`.
++
+diff --git a/docs/superpowers/sdd/2026-11-03-corda-brava/task-6-report.md b/docs/superpowers/sdd/2026-11-03-corda-brava/task-6-report.md
+new file mode 100644
+index 0000000..4359173
+--- /dev/null
++++ b/docs/superpowers/sdd/2026-11-03-corda-brava/task-6-report.md
+@@ -0,0 +1,54 @@
++# Task 6 Report — MatchService + ConsumerLoop + MatchRegistry
++
++**Status:** DONE. 86 tests pass (78 prior + 8 new), ruff and black clean.
++
++## Files
++- `backend/app/services/match_service.py` (service, `ConflictError`, `MatchNotFoundError`)
++- `backend/app/services/consumer.py` (`ConsumerLoop`, `utcnow`)
++- `backend/app/services/registry.py` (`MatchRegistry`, `Broadcast` type)
++- `backend/tests/services/test_consumer.py` (4 tests, also holds the shared `Env` helper)
++- `backend/tests/services/test_match_service.py` (4 tests)
++
++## Public signatures
++```python
++class ConflictError(Exception)        # -> HTTP 409
++class MatchNotFoundError(Exception)   # -> HTTP 404
++
++MatchService(*, matches, players, events, queue, registry, settings, clock=utcnow)
++  create_match(duration_s: int | None = None) -> Match      # ValueError if outside MIN/MAX
++  get_match_view(match_id) -> MatchState                    # remaining_s computed from clock
++  update_duration(match_id, duration_s) -> Match            # ConflictError unless LOBBY
++  start(match_id) -> Match                                  # sync; LOBBY->RUNNING; needs a running asyncio loop
++  async cancel(match_id) -> Match                           # stops loop; unfinished -> FINISHED, result None
++
++ConsumerLoop(match_id, *, matches, players, events, queue, settings, broadcast, clock=utcnow)
++  async run() -> None        # ticks every TICK_INTERVAL_MS until FINISHED
++  async tick() -> bool       # one tick; True when finished
++
++MatchRegistry()
++  add_listener(match_id, cb) / remove_listener(match_id, cb)
++  async broadcast(match_id, payload)   # failing listener is dropped
++  is_running(match_id) -> bool
++  start_loop(match_id, coro) / async stop_loop(match_id)
++
++Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
++```
++
++## Broadcast payloads (prompt.md section 14 shapes)
++- Every tick: `{"type":"tick","rope":float,"remainingS":float,"delta":{"inter":int,"gremio":int},"scores":{"inter":{"pulls":int},"gremio":{"pulls":int}}}`
++- On finish, after the final tick: `{"type":"ended","result":"INTER|GREMIO|DRAW","endReason":"win|timeout","finalRope":float}`. No `analytics` yet; Task 10 should add it in the WS layer.
++
++## Start / stop
++`MatchService.start` persists RUNNING, `started_at`, `ends_at`, then `registry.start_loop(id, loop.run())`. The loop ends itself on win or timeout. `cancel` calls `registry.stop_loop` (task.cancel). The service wires the broadcast to `registry.broadcast(match_id, ...)`; WS handlers call `registry.add_listener`.
++
++## Behavior notes
++- Ack happens only after `update_match`. Duplicate batch_ids (found via `event_exists`) are skipped but still acked.
++- The queue is global. Messages for other matches are abandoned. Queue receive uses `max_wait_s=0`, and pacing is `asyncio.sleep`.
++- Scores are kept in the loop and seeded from `list_events` on construction.
++- Tests drive `tick()` with a fake clock; only the win test uses `run()` with `TICK_INTERVAL_MS=1`.
++
++## Deviations
++- Single `cancel` instead of separate reset/cancel; "new match" is a new `create_match`.
++- `add_event` with an unknown player_id raises an FK error that would kill the loop. Task 8 must validate players at ingest.
++- `create_match` takes an optional duration and validates against MIN/MAX.
++- Tests were written together with the code, so the red step was not run separately.

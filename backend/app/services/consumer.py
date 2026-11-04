@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -15,6 +16,7 @@ from app.repositories.interfaces import EventRepository, MatchRepository, Player
 from app.services.registry import Broadcast
 
 MAX_BATCH_MESSAGES = 500
+log = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -44,7 +46,12 @@ class ConsumerLoop:
 
     async def run(self) -> None:
         """Tick until the match finishes; cancel the task to stop early."""
-        while not await self.tick():
+        while True:
+            try:
+                if await self.tick():
+                    return
+            except Exception:  # noqa: BLE001 - keep ticking so the timer can still end the match
+                log.exception("tick failed for match %s", self.match_id)
             await asyncio.sleep(self._settings.TICK_INTERVAL_MS / 1000)
 
     async def tick(self) -> bool:
@@ -55,23 +62,33 @@ class ConsumerLoop:
         cfg, now = match.config, self._clock()
 
         msgs = await self._queue.receive_batch(MAX_BATCH_MESSAGES, 0)
-        foreign = [m for m in msgs if m.payload.match_id != self.match_id]
-        if foreign:
-            await self._queue.abandon(foreign)
-        mine = [m for m in msgs if m.payload.match_id == self.match_id]
-
-        delta = {Team.INTER: 0, Team.GREMIO: 0}
-        for m in mine:
-            ev = m.payload
-            # dedup: a redelivered/repeated batch_id has no effect (but is still acked)
-            if self._events.event_exists(self.match_id, ev.batch_id):
-                continue
-            self._events.add_event(ev)
-            delta[ev.team] += ev.count
-        for t, n in delta.items():
-            self._scores[t] += n
-
+        # shortcut: one shared queue for all matches; per-match queues if concurrent matches matter
         roster = self._players.list_players(self.match_id)
+        ids = {p.id for p in roster}
+        statuses: dict[str, MatchStatus | None] = {}
+        abandon, drop, mine, new_events = [], [], [], []
+        delta = {Team.INTER: 0, Team.GREMIO: 0}
+        seen: set[str] = set()
+        for m in msgs:
+            ev = m.payload
+            if ev.match_id != self.match_id:
+                if ev.match_id not in statuses:
+                    other = self._matches.get_match(ev.match_id)
+                    statuses[ev.match_id] = other.status if other else None
+                # stale (missing / not RUNNING) -> drop; else leave for its own loop
+                (abandon if statuses[ev.match_id] is MatchStatus.RUNNING else drop).append(m)
+            elif ev.player_id not in ids:
+                log.warning("dropping batch %s: unknown player %s", ev.batch_id, ev.player_id)
+                drop.append(m)
+            elif ev.batch_id in seen or self._events.event_exists(self.match_id, ev.batch_id):
+                drop.append(m)  # duplicate / redelivery: no effect, just ack
+            else:
+                seen.add(ev.batch_id)
+                new_events.append(ev)
+                delta[ev.team] += ev.count
+                mine.append(m)
+        if abandon:
+            await self._queue.abandon(abandon)
         tick_in = TickInput(
             pulls_inter=delta[Team.INTER],
             pulls_gremio=delta[Team.GREMIO],
@@ -101,9 +118,11 @@ class ConsumerLoop:
                 state, timed_out=timed_out, rope_target=cfg.rope_target
             )
             match.status = MatchStatus.FINISHED
-        self._matches.update_match(match)  # durable before ack
-        if mine:
-            await self._queue.ack(mine)
+        self._matches.apply_tick(match, new_events)  # events + rope in one transaction
+        for t, n in delta.items():
+            self._scores[t] += n
+        if mine or drop:
+            await self._queue.ack(mine + drop)  # only after the durable apply
 
         remaining = max(0.0, (match.ends_at - now).total_seconds()) if match.ends_at else 0.0
         await self._broadcast(

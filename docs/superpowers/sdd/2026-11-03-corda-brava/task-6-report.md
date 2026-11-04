@@ -52,3 +52,11 @@ Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
 - `add_event` with an unknown player_id raises an FK error that would kill the loop. Task 8 must validate players at ingest.
 - `create_match` takes an optional duration and validates against MIN/MAX.
 - Tests were written together with the code, so the red step was not run separately.
+
+## Fix round 1
+91 tests pass (86 + 5), ruff/black clean.
+1. Poison handling: player is validated against the match roster before persisting; unknown-player messages are logged and acked. `run()` wraps `tick()` in try/except (log, continue) so the timeout still ends the match.
+2. Registry: `start_loop` adds a done-callback that logs a crash and drops the task and listeners. `stop_loop` uses `asyncio.wait([task])` instead of swallowing `CancelledError`. New `clear(match_id)`, called on natural finish and on cancel.
+3. Atomicity: new `MatchRepository.apply_tick(match, events)` runs the event inserts and the match update in one SQLite transaction (rollback on error). Scores are updated in memory only after it succeeds. A failed apply leaves the message unacked and redelivery applies once.
+4. Foreign-match messages: if that match is missing or not RUNNING the message is acked and dropped; only messages for another RUNNING match are abandoned. A `shortcut:` comment documents the single shared queue.
+Also: duplicate batch_ids within one tick are de-duplicated (previously only checked against persisted events). Tests were written together with the fixes (no separate red run).

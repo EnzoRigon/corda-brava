@@ -13,9 +13,10 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from app.domain.entities import Match, MatchConfig, TeamConfig
+from app.domain.entities import Match, MatchConfig, PullEvent, TeamConfig
 from app.domain.enums import BalanceMode, EndReason, MatchResult, MatchStatus
 from app.repositories.sqlite.connection import get_connection, write_lock
+from app.repositories.sqlite.event_repo import _INSERT_EVENT, _event_to_params
 
 _INSERT_MATCH = """
 INSERT INTO matches (
@@ -118,6 +119,18 @@ def _match_to_params(match: Match) -> dict[str, object]:
     }
 
 
+def _update_params(match: Match) -> dict[str, object]:
+    return {
+        "id": match.id,
+        "status": match.status.value,
+        "rope_position": match.rope_position,
+        "started_at": _dt_to_text(match.started_at),
+        "ends_at": _dt_to_text(match.ends_at),
+        "result": match.result.value if match.result else None,
+        "end_reason": match.end_reason.value if match.end_reason else None,
+    }
+
+
 class SQLiteMatchRepository:
     """SQLite-backed MatchRepository implementation.
 
@@ -145,16 +158,21 @@ class SQLiteMatchRepository:
 
     def update_match(self, match: Match) -> Match:
         """UPDATE the mutable runtime columns of an existing Match."""
-        params = {
-            "id": match.id,
-            "status": match.status.value,
-            "rope_position": match.rope_position,
-            "started_at": _dt_to_text(match.started_at),
-            "ends_at": _dt_to_text(match.ends_at),
-            "result": match.result.value if match.result else None,
-            "end_reason": match.end_reason.value if match.end_reason else None,
-        }
+        params = _update_params(match)
         with write_lock():
             self._conn.execute(_UPDATE_MATCH, params)
             self._conn.commit()
+        return match
+
+    def apply_tick(self, match: Match, events: list[PullEvent]) -> Match:
+        """Persist *events* and the match update in ONE transaction (all or nothing)."""
+        with write_lock():
+            try:
+                for e in events:
+                    self._conn.execute(_INSERT_EVENT, _event_to_params(e))
+                self._conn.execute(_UPDATE_MATCH, _update_params(match))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return match

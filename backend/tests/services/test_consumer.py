@@ -147,3 +147,80 @@ async def test_timeout_is_draw(env: Env) -> None:
     m = env.matches.get_match(env.match.id)
     assert (m.result, m.end_reason) == (MatchResult.DRAW, EndReason.TIMEOUT)
     assert env.sent[-1]["endReason"] == "timeout"
+
+
+async def test_unknown_player_is_acked_and_match_keeps_ticking(env: Env) -> None:
+    loop = env.force_running()
+    await env.queue.enqueue(
+        PullEvent(
+            id="e",
+            match_id=env.match.id,
+            player_id="ghost",
+            team=Team.INTER,
+            count=1,
+            client_ts=0.0,
+            batch_id="g",
+        )
+    )
+    assert await loop.tick() is False
+    await asyncio.sleep(0.03)
+    assert await env.queue.receive_batch(10, 0) == []  # acked, not redelivered
+    env.now = T0 + timedelta(seconds=61)
+    assert await loop.tick() is True
+
+
+async def test_run_survives_a_failing_tick(env: Env) -> None:
+    loop = env.force_running()
+    real, calls = loop.tick, []
+
+    async def flaky() -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return await real()
+
+    loop.tick = flaky
+    env.now = T0 + timedelta(seconds=61)
+    await loop.run()
+    assert len(calls) == 2
+    assert env.matches.get_match(env.match.id).status is MatchStatus.FINISHED
+
+
+async def test_failed_apply_then_redelivery_applies_once(env: Env, monkeypatch) -> None:
+    from app.repositories.sqlite import match_repo
+
+    loop = env.force_running()
+    await env.pull(Team.GREMIO, 3, "r1")
+    good = match_repo._UPDATE_MATCH
+    monkeypatch.setattr(match_repo, "_UPDATE_MATCH", "UPDATE nope SET x=1")
+    with pytest.raises(Exception):
+        await loop.tick()
+    monkeypatch.setattr(match_repo, "_UPDATE_MATCH", good)
+    assert env.events.list_events(env.match.id) == []  # rolled back
+    await asyncio.sleep(0.03)  # lease expires -> redelivered
+    await loop.tick()
+    assert env.matches.get_match(env.match.id).rope_position == 3
+    assert len(env.events.list_events(env.match.id)) == 1
+    assert env.sent[-1]["scores"]["gremio"]["pulls"] == 3
+
+
+async def test_stale_finished_match_message_is_acked(env: Env) -> None:
+    loop = env.force_running()
+    other = env.svc.create_match(duration_s=60)
+    m = env.matches.get_match(other.id)
+    m.status = MatchStatus.FINISHED
+    env.matches.update_match(m)
+    await env.queue.enqueue(
+        PullEvent(
+            id="s",
+            match_id=other.id,
+            player_id="p",
+            team=Team.INTER,
+            count=1,
+            client_ts=0.0,
+            batch_id="stale",
+        )
+    )
+    await loop.tick()
+    await asyncio.sleep(0.03)
+    assert await env.queue.receive_batch(10, 0) == []

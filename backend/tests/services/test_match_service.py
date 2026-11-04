@@ -46,3 +46,16 @@ async def test_update_duration_only_in_lobby(env: Env) -> None:
 def test_view_lobby_remaining(env: Env) -> None:
     v = env.svc.get_match_view(env.match.id)
     assert v.status is MatchStatus.LOBBY and v.remaining_s == 60
+
+
+async def test_listeners_cleared_when_loop_finishes(env: Env) -> None:
+    async def cb(_: dict) -> None: ...
+
+    env.registry.add_listener(env.match.id, cb)
+    env.svc.start(env.match.id)
+    env.now = T0 + __import__("datetime").timedelta(seconds=61)
+    for _ in range(50):
+        if not env.registry.is_running(env.match.id):
+            break
+        await __import__("asyncio").sleep(0.01)
+    assert env.registry._listeners.get(env.match.id) is None

@@ -43,6 +43,10 @@ class MatchRepository(Protocol):
         """Overwrite all fields of an existing Match and return it."""
         ...
 
+    def apply_tick(self, match: Match, events: list[PullEvent]) -> Match:
+        """Atomically persist new events and the match update (single transaction)."""
+        ...
+
 
 class PlayerRepository(Protocol):
     """Persistence interface for Player entities.
