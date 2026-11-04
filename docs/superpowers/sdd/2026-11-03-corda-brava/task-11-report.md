@@ -45,3 +45,8 @@ global.css vars: --inter --inter-dark --gremio --gremio-light --gremio-black --b
 - Font woff2 copied into src/assets/fonts (not imported from npm package).
 - Added vitest.config.ts (jsdom) separate from vite.config.ts; test exports `getDeviceId` for non-React testing.
 - Placeholder pages live in App.tsx as one small component; no per-page files yet. No mascot/crest code added.
+
+## Fix round 1 (`4ff58fc`)
+- Backend: WS `player_joined.team` now lowercase (`player.py`); test updated. This supersedes the note above: ALL team ids are lowercase. 144 backend tests pass, ruff and black clean.
+- Frontend: `PlayerJoinedMsg.team` is `TeamId`; `TeamUpper` removed; `LoginResponse.expiresAt` is `string`; `request()` returns undefined for 204 / content-length 0.
+- Frontend checks: vitest 3/3, tsc, build, lint all clean.
