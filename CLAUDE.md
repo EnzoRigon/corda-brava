@@ -15,11 +15,11 @@ This file tells a Claude Code session how to work in this repo and how to **resu
 
 Trust the ledger + `git log` over memory. A task with a `Task N: complete` line is done — do not redo it.
 
-## Current state (2026-11-03, end of session 1)
+## Current state (2026-11-04, session 2)
 
 - **On `main`** (single branch, no worktree). All work merged and committed.
-- **Phase A: Tasks 1–4 complete and reviewed** (backend skeleton, pure game rules, SQLite repos, broker-shaped EventQueue). 71 backend tests passing; ruff + black clean.
-- **Next task: Task 5 — host authentication** (login, JWT token, `require_host`, WS token verify). Its brief is in the sdd/ directory. After Task 5, Phase A is done; continue with Phase B.
+- **Phase A complete: Tasks 1–5 reviewed** (backend skeleton, pure game rules, SQLite repos, broker-shaped EventQueue, host auth). 78 backend tests passing; ruff + black clean.
+- **Next task: Task 6 — MatchService + ConsumerLoop + MatchRegistry** (start of Phase B).
 
 ## How to build each task (the loop)
 

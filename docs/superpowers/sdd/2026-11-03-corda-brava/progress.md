@@ -78,3 +78,12 @@ Task 4: complete (commits e09ec88..5578afc, review clean).
 User instructions for wrap-up: (1) create root CLAUDE.md + README.md explaining repo/project/how-to-proceed/how-to-keep-progress-and-docs-updated; (2) commit everything; (3) push WHOLE repo to https://github.com/PauloDalsoto/corda-brava (awaiting user confirm: repo already created? push only main?).
 Asset policy to document: NO code draws/renders the club mascots or crests; the one asset step only copies owner-authored committed image files and displays them.
 
+
+## SESSION 2 (2026-11-04) — resumed on Windows
+Env: repo cloned to C:\Users\Paulo\OneDrive\Área de Trabalho\corda-brava; backend .venv recreated (Python 3.12.2, Windows -> `.venv/Scripts/python`). Baseline 71 pass.
+
+Task 5: implemented (commit 8e75e62; report 2e9a61c; 78 pass [71 prior + 7 new]; ruff+black clean). host_session.py: check_password (compare_digest on bytes), issue_host_token(settings)->(token, expires_at) HS256 role=host, verify_host_token never raises. api/auth.py: require_host (Bearer via get_settings dep -> 401 + WWW-Authenticate: Bearer), verify_ws_token(token: str | None, settings)->bool (caller closes WS 1008 in Task 10). schemas/host.py: HostLoginRequest{password}, HostLoginResponse{token, expiresAt}. Login ROUTE deferred to Task 10 per plan.
+Task 5: review (sonnet-1M) — Spec ✅, Quality Approved. Minors deferred: (a) jwt.decode should pass options={"require": ["exp"]} + test token-without-exp rejected; (b) no test pins algorithm (alg=none / HS512 rejected); (c) 1 pytest warning untraced (possibly PyJWT short-HMAC-key warning in tests).
+Task 5: complete (commits 3e1790c..8e75e62, review clean).
+
+## Phase A COMPLETE (Tasks 1-5). HEAD after Task 5 docs = see git log. NEXT: Task 6 (MatchService + ConsumerLoop + MatchRegistry). Thread into Task 6 dispatch: resolve_result(state, *, timed_out, rope_target) kwarg; queue API receive_batch/ack/abandon (task-4-report); repos (task-3-report).

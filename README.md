@@ -11,7 +11,7 @@ This is a **private / educational fan project** (a party game), **not** a commer
 Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following the plan in
 [`docs/superpowers/plans/2026-11-03-corda-brava.md`](./docs/superpowers/plans/2026-11-03-corda-brava.md).
 
-**Done so far (backend, Phase A):**
+**Done so far (backend, Phase A — complete):**
 
 | Task | What | State |
 |------|------|-------|
@@ -19,10 +19,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 2 | Pure game rules (`apply_pulls` / `check_win` / `resolve_result`) + tests | ✅ reviewed |
 | 3 | Repository interfaces + SQLite impls (WAL, unique constraints) + tests | ✅ reviewed |
 | 4 | Broker-shaped `EventQueue` + in-memory lease/ack/redelivery + tests | ✅ reviewed |
+| 5 | Host auth — password check, JWT host token, `require_host`, WS token verify + tests | ✅ reviewed |
 
-**Current test count:** 71 passing (backend). Lint (ruff + black) clean.
+**Current test count:** 78 passing (backend). Lint (ruff + black) clean.
 
-**Not yet built:** Task 5 host auth; Phase B services + API + WebSocket; Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Not yet built:** Phase B services + API + WebSocket; Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 

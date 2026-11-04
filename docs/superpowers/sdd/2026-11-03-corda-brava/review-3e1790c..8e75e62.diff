@@ -1,0 +1,186 @@
+diff --git a/backend/app/api/auth.py b/backend/app/api/auth.py
+new file mode 100644
+index 0000000..c0ed0e7
+--- /dev/null
++++ b/backend/app/api/auth.py
+@@ -0,0 +1,29 @@
++"""Auth dependencies for host-only routes and WebSocket token checks."""
++
++from __future__ import annotations
++
++from typing import Annotated
++
++from fastapi import Depends, Header, HTTPException
++
++from app.core.settings import Settings, get_settings
++from app.services.host_session import verify_host_token
++
++
++def verify_ws_token(token: str | None, settings: Settings) -> bool:
++    """Check a WebSocket query-string token."""
++    return bool(token) and verify_host_token(token, settings)
++
++
++def require_host(
++    settings: Annotated[Settings, Depends(get_settings)],
++    authorization: Annotated[str | None, Header()] = None,
++) -> None:
++    """401 unless ``Authorization: Bearer <valid host token>`` is present."""
++    scheme, _, token = (authorization or "").partition(" ")
++    if scheme.lower() != "bearer" or not verify_host_token(token, settings):
++        raise HTTPException(
++            status_code=401,
++            detail="Invalid or missing host token",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
+diff --git a/backend/app/schemas/__init__.py b/backend/app/schemas/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/schemas/host.py b/backend/app/schemas/host.py
+new file mode 100644
+index 0000000..ff12223
+--- /dev/null
++++ b/backend/app/schemas/host.py
+@@ -0,0 +1,16 @@
++"""Host login request/response models (camelCase JSON on the wire)."""
++
++from __future__ import annotations
++
++from datetime import datetime
++
++from pydantic import BaseModel
++
++
++class HostLoginRequest(BaseModel):
++    password: str
++
++
++class HostLoginResponse(BaseModel):
++    token: str
++    expiresAt: datetime  # noqa: N815 - wire format is camelCase per spec
+diff --git a/backend/app/services/__init__.py b/backend/app/services/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/services/host_session.py b/backend/app/services/host_session.py
+new file mode 100644
+index 0000000..24b4d8e
+--- /dev/null
++++ b/backend/app/services/host_session.py
+@@ -0,0 +1,33 @@
++"""Host password check and JWT session tokens."""
++
++from __future__ import annotations
++
++import secrets
++from datetime import UTC, datetime, timedelta
++
++import jwt
++
++from app.core.settings import Settings
++
++_ALG = "HS256"
++
++
++def check_password(candidate: str, settings: Settings) -> bool:
++    """Constant-time comparison against HOST_PASSWORD."""
++    return secrets.compare_digest(candidate.encode(), settings.HOST_PASSWORD.encode())
++
++
++def issue_host_token(settings: Settings) -> tuple[str, datetime]:
++    """Return a signed host JWT and its expiry."""
++    expires_at = datetime.now(UTC) + timedelta(seconds=settings.HOST_TOKEN_TTL_SECONDS)
++    token = jwt.encode({"role": "host", "exp": expires_at}, settings.SECRET_KEY, algorithm=_ALG)
++    return token, expires_at
++
++
++def verify_host_token(token: str, settings: Settings) -> bool:
++    """True only for a valid, unexpired token with role=host. Never raises."""
++    try:
++        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[_ALG])
++    except Exception:  # noqa: BLE001 - any failure means invalid
++        return False
++    return claims.get("role") == "host"
+diff --git a/backend/tests/services/__init__.py b/backend/tests/services/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/services/test_host_session.py b/backend/tests/services/test_host_session.py
+new file mode 100644
+index 0000000..f1d4c96
+--- /dev/null
++++ b/backend/tests/services/test_host_session.py
+@@ -0,0 +1,75 @@
++"""Tests for host password check, JWT issue/verify and the require_host dependency."""
++
++from __future__ import annotations
++
++from datetime import UTC, datetime
++
++import jwt
++from fastapi import Depends, FastAPI
++from fastapi.testclient import TestClient
++
++from app.api.auth import require_host, verify_ws_token
++from app.core.settings import Settings, get_settings
++from app.services.host_session import check_password, issue_host_token, verify_host_token
++
++S = Settings(HOST_PASSWORD="Pässwörd", SECRET_KEY="k" * 32, HOST_TOKEN_TTL_SECONDS=60)
++
++
++def test_check_password():
++    assert check_password("Pässwörd", S)
++    assert not check_password("wrong", S)
++    assert not check_password("", S)
++
++
++def test_issue_and_verify():
++    token, exp = issue_host_token(S)
++    assert verify_host_token(token, S)
++    assert exp > datetime.now(UTC)
++
++
++def test_tampered_and_garbage():
++    token, _ = issue_host_token(S)
++    assert not verify_host_token(token[:-2] + "xx", S)
++    assert not verify_host_token("garbage", S)
++    assert not verify_host_token("", S)
++    other = Settings(SECRET_KEY="z" * 32)
++    assert not verify_host_token(token, other)
++
++
++def test_expired():
++    expired = Settings(SECRET_KEY=S.SECRET_KEY, HOST_TOKEN_TTL_SECONDS=-5)
++    token, _ = issue_host_token(expired)
++    assert not verify_host_token(token, expired)
++
++
++def test_wrong_role():
++    exp = int(datetime.now(UTC).timestamp()) + 60
++    token = jwt.encode({"role": "player", "exp": exp}, S.SECRET_KEY, algorithm="HS256")
++    assert not verify_host_token(token, S)
++
++
++def test_verify_ws_token():
++    token, _ = issue_host_token(S)
++    assert verify_ws_token(token, S)
++    assert not verify_ws_token("nope", S)
++
++
++def _client() -> TestClient:
++    app = FastAPI()
++    app.dependency_overrides[get_settings] = lambda: S
++
++    @app.get("/x", dependencies=[Depends(require_host)])
++    def x() -> dict:
++        return {"ok": True}
++
++    return TestClient(app)
++
++
++def test_require_host():
++    c = _client()
++    assert c.get("/x").status_code == 401
++    assert c.get("/x", headers={"Authorization": "Bearer bad"}).status_code == 401
++    assert c.get("/x", headers={"Authorization": "Basic abc"}).status_code == 401
++    token, _ = issue_host_token(S)
++    r = c.get("/x", headers={"Authorization": f"Bearer {token}"})
++    assert r.status_code == 200
