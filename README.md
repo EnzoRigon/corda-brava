@@ -22,10 +22,11 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 | 5 | Host auth — password check, JWT host token, `require_host`, WS token verify + tests | ✅ reviewed |
 | 6 | Match state machine + single-writer consumer loop (atomic apply, poison-safe) + registry + tests | ✅ reviewed |
 | 7 | Analytics service (§15 payload: timeline, peak, best/worst, %, leaderboard) + tests | ✅ reviewed |
+| 8 | Player API — public info + join (one-per-device idempotent), player token, DI container + tests | ✅ reviewed |
 
-**Current test count:** 95 passing (backend). Lint (ruff + black) clean.
+**Current test count:** 107 passing (backend). Lint (ruff + black) clean.
 
-**Not yet built:** rest of Phase B (Tasks 8–10 API + WebSocket); Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
+**Not yet built:** rest of Phase B (Tasks 9–10 pulls/me + host routes + WebSocket); Phase C the entire React frontend; Phase D Docker + READMEs-for-run + end-to-end. See the plan for the full list and the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for exactly where things stand.
 
 ---
 

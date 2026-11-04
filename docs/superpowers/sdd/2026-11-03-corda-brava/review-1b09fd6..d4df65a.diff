@@ -1,0 +1,441 @@
+diff --git a/backend/app/api/deps.py b/backend/app/api/deps.py
+new file mode 100644
+index 0000000..b5b25df
+--- /dev/null
++++ b/backend/app/api/deps.py
+@@ -0,0 +1,72 @@
++"""App-scoped singletons (settings, repos, queue, registry, service) for ``Depends``.
++
++The container is built lazily on first use and cached on ``app.state.container``;
++tests may pre-set ``app.state.container`` or use ``app.dependency_overrides[get_container]``.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Annotated
++
++from fastapi import Depends, FastAPI, Request
++
++from app.core.settings import Settings
++from app.queue.factory import make_event_queue
++from app.queue.interfaces import EventQueue
++from app.repositories.sqlite.bootstrap import bootstrap_db
++from app.repositories.sqlite.event_repo import SQLiteEventRepository
++from app.repositories.sqlite.match_repo import SQLiteMatchRepository
++from app.repositories.sqlite.player_repo import SQLitePlayerRepository
++from app.services.match_service import MatchService
++from app.services.registry import MatchRegistry
++
++
++@dataclass
++class Container:
++    settings: Settings
++    matches: SQLiteMatchRepository
++    players: SQLitePlayerRepository
++    events: SQLiteEventRepository
++    queue: EventQueue
++    registry: MatchRegistry
++    service: MatchService
++
++
++def _db_path(settings: Settings) -> str:
++    url = settings.DATABASE_URL
++    return url.removeprefix("sqlite:///") if url.startswith("sqlite:///") else url
++
++
++def build_container(settings: Settings) -> Container:
++    db = _db_path(settings)
++    bootstrap_db(db)
++    matches, players, events = (
++        SQLiteMatchRepository(db),
++        SQLitePlayerRepository(db),
++        SQLiteEventRepository(db),
++    )
++    queue, registry = make_event_queue(settings), MatchRegistry()
++    service = MatchService(
++        matches=matches,
++        players=players,
++        events=events,
++        queue=queue,
++        registry=registry,
++        settings=settings,
++    )
++    return Container(settings, matches, players, events, queue, registry, service)
++
++
++def get_container(app: FastAPI) -> Container:
++    if getattr(app.state, "container", None) is None:
++        app.state.container = build_container(app.state.settings)
++    return app.state.container
++
++
++def container_dep(request: Request) -> Container:
++    """FastAPI dependency; override via ``app.dependency_overrides[container_dep]``."""
++    return get_container(request.app)
++
++
++ContainerDep = Annotated[Container, Depends(container_dep)]
+diff --git a/backend/app/api/player.py b/backend/app/api/player.py
+new file mode 100644
+index 0000000..4459363
+--- /dev/null
++++ b/backend/app/api/player.py
+@@ -0,0 +1,83 @@
++"""Public player routes: match info and join (one player per device, idempotent)."""
++
++from __future__ import annotations
++
++import uuid
++
++from fastapi import APIRouter, HTTPException
++
++from app.api.deps import ContainerDep
++from app.domain.entities import Match, Player
++from app.domain.enums import MatchStatus, Team
++from app.repositories.interfaces import UniqueConstraintError
++from app.schemas.player import (
++    Counts,
++    JoinRequest,
++    JoinResponse,
++    PublicMatch,
++    PublicTeam,
++    PublicTeams,
++    TeamColors,
++)
++from app.services.match_service import ConflictError, MatchNotFoundError
++from app.services.player_session import issue_player_token
++
++router = APIRouter(prefix="/api/matches", tags=["player"])
++
++LATE_JOIN_DETAIL = "A partida já começou"
++
++
++def _match(c: ContainerDep, match_id: str) -> Match:
++    m = c.matches.get_match(match_id)
++    if m is None:
++        raise MatchNotFoundError(match_id)
++    return m
++
++
++def _team(t) -> PublicTeam:
++    return PublicTeam(
++        name=t.name, colors=TeamColors(primary=t.primary_color, secondary=t.secondary_color)
++    )
++
++
++@router.get("/{match_id}/public", response_model=PublicMatch)
++def public_info(match_id: str, c: ContainerDep) -> PublicMatch:
++    m = _match(c, match_id)
++    players = c.players.list_players(match_id)
++    return PublicMatch(
++        status=m.status,
++        teams=PublicTeams(inter=_team(m.config.inter), gremio=_team(m.config.gremio)),
++        counts=Counts(
++            inter=sum(p.team is Team.INTER for p in players),
++            gremio=sum(p.team is Team.GREMIO for p in players),
++        ),
++        durationS=m.config.duration_s,
++    )
++
++
++@router.post("/{match_id}/players", response_model=JoinResponse)
++def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinResponse:
++    m = _match(c, match_id)
++    player = c.players.get_player_by_device(match_id, body.deviceId)
++    if player is None:
++        if m.status is not MatchStatus.LOBBY:
++            # Both policies reject new joins; spectator mode is a frontend concern (see report).
++            raise ConflictError(LATE_JOIN_DETAIL)
++        pid = str(uuid.uuid4())
++        player = Player(
++            id=pid,
++            match_id=match_id,
++            device_id=body.deviceId,
++            name=body.name,
++            team=body.team,
++            token=issue_player_token(match_id, pid, body.deviceId, c.settings),
++        )
++        try:
++            player = c.players.add_player(player)
++        except UniqueConstraintError:  # lost a race with the same device
++            existing = c.players.get_player_by_device(match_id, body.deviceId)
++            if existing is None:
++                raise HTTPException(status_code=500, detail="join failed") from None
++            player = existing
++    token = issue_player_token(match_id, player.id, player.device_id, c.settings)
++    return JoinResponse(playerId=player.id, playerToken=token, team=player.team)
+diff --git a/backend/app/core/app_factory.py b/backend/app/core/app_factory.py
+index 8959211..fac3cda 100644
+--- a/backend/app/core/app_factory.py
++++ b/backend/app/core/app_factory.py
+@@ -11,12 +11,15 @@ from __future__ import annotations
+ 
+ import logging
+ 
+-from fastapi import FastAPI
++from fastapi import FastAPI, Request
+ from fastapi.middleware.cors import CORSMiddleware
++from fastapi.responses import JSONResponse
+ 
+ from app.api.health import router as health_router
++from app.api.player import router as player_router
+ from app.core.logging import configure_logging
+ from app.core.settings import Settings
++from app.services.match_service import ConflictError, MatchNotFoundError
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -38,6 +41,17 @@ def create_app(settings: Settings) -> FastAPI:
+         version="0.1.0",
+     )
+ 
++    app.state.settings = settings
++    app.state.container = None  # built lazily by app.api.deps.get_container
++
++    @app.exception_handler(ConflictError)
++    async def _conflict(_: Request, exc: ConflictError) -> JSONResponse:
++        return JSONResponse(status_code=409, content={"detail": str(exc)})
++
++    @app.exception_handler(MatchNotFoundError)
++    async def _not_found(_: Request, exc: MatchNotFoundError) -> JSONResponse:
++        return JSONResponse(status_code=404, content={"detail": "Partida não encontrada"})
++
+     # ── CORS ─────────────────────────────────────────────────────────────────
+     origins: list[str] = (
+         ["*"]
+@@ -54,6 +68,7 @@ def create_app(settings: Settings) -> FastAPI:
+ 
+     # ── Routers ───────────────────────────────────────────────────────────────
+     app.include_router(health_router)
++    app.include_router(player_router)
+ 
+     # Root /api router — empty now; later tasks attach sub-routers here.
+     from fastapi import APIRouter  # local import to keep top-level clean
+diff --git a/backend/app/schemas/player.py b/backend/app/schemas/player.py
+new file mode 100644
+index 0000000..049b606
+--- /dev/null
++++ b/backend/app/schemas/player.py
+@@ -0,0 +1,52 @@
++"""Player API models (camelCase JSON on the wire)."""
++
++from __future__ import annotations
++
++from typing import Annotated
++
++from pydantic import BaseModel, StringConstraints
++
++from app.domain.enums import MatchStatus, Team
++
++NAME_MAX = 24
++
++Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
++
++
++class JoinRequest(BaseModel):
++    name: Name
++    team: Team
++    deviceId: Annotated[str, StringConstraints(min_length=1, max_length=128)]  # noqa: N815
++
++
++class JoinResponse(BaseModel):
++    playerId: str  # noqa: N815
++    playerToken: str  # noqa: N815
++    team: Team
++
++
++class TeamColors(BaseModel):
++    primary: str
++    secondary: str
++
++
++class PublicTeam(BaseModel):
++    name: str
++    colors: TeamColors
++
++
++class PublicTeams(BaseModel):
++    inter: PublicTeam
++    gremio: PublicTeam
++
++
++class Counts(BaseModel):
++    inter: int
++    gremio: int
++
++
++class PublicMatch(BaseModel):
++    status: MatchStatus
++    teams: PublicTeams
++    counts: Counts
++    durationS: int  # noqa: N815
+diff --git a/backend/app/services/player_session.py b/backend/app/services/player_session.py
+new file mode 100644
+index 0000000..b201785
+--- /dev/null
++++ b/backend/app/services/player_session.py
+@@ -0,0 +1,30 @@
++"""Player JWT session tokens (role=player), signed with SECRET_KEY."""
++
++from __future__ import annotations
++
++from typing import Any
++
++import jwt
++
++from app.core.settings import Settings
++
++_ALG = "HS256"
++
++
++def issue_player_token(match_id: str, player_id: str, device_id: str, settings: Settings) -> str:
++    return jwt.encode(
++        {"role": "player", "match_id": match_id, "player_id": player_id, "device_id": device_id},
++        settings.SECRET_KEY,
++        algorithm=_ALG,
++    )
++
++
++def verify_player_token(token: str, settings: Settings) -> dict[str, str] | None:
++    """Return {match_id, player_id, device_id} for a valid player token, else None. Never raises."""
++    try:
++        claims: dict[str, Any] = jwt.decode(token, settings.SECRET_KEY, algorithms=[_ALG])
++        if claims.get("role") != "player":
++            return None
++        return {k: str(claims[k]) for k in ("match_id", "player_id", "device_id")}
++    except Exception:  # noqa: BLE001 - any failure means invalid
++        return None
+diff --git a/backend/tests/api/__init__.py b/backend/tests/api/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/api/test_player_join.py b/backend/tests/api/test_player_join.py
+new file mode 100644
+index 0000000..c4e91ea
+--- /dev/null
++++ b/backend/tests/api/test_player_join.py
+@@ -0,0 +1,124 @@
++"""Player public + join API tests (TestClient, temp SQLite)."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++from app.api.deps import get_container
++from app.core.app_factory import create_app
++from app.core.settings import Settings
++from app.domain.enums import MatchStatus
++from app.repositories.sqlite.connection import close_connection
++from app.services.player_session import verify_player_token
++
++
++@pytest.fixture()
++def ctx(tmp_path: Path):
++    db = tmp_path / "t.db"
++    settings = Settings(DATABASE_URL=f"sqlite:///{db.as_posix()}", SECRET_KEY="s" * 32)
++    app = create_app(settings)
++    client = TestClient(app)
++    container = get_container(app)
++    match = container.service.create_match(duration_s=60)
++    yield client, container, settings, match
++    close_connection(db)
++
++
++def _join(client, mid, device="d1", name="Ana", team="inter"):
++    return client.post(
++        f"/api/matches/{mid}/players", json={"name": name, "team": team, "deviceId": device}
++    )
++
++
++def test_join_returns_player_and_valid_token(ctx) -> None:
++    client, _, settings, match = ctx
++    r = _join(client, match.id)
++    assert r.status_code == 200
++    body = r.json()
++    assert body["team"] == "inter"
++    claims = verify_player_token(body["playerToken"], settings)
++    assert claims == {
++        "match_id": match.id,
++        "player_id": body["playerId"],
++        "device_id": "d1",
++    }
++
++
++def test_rejoin_same_device_is_idempotent(ctx) -> None:
++    client, container, _, match = ctx
++    a = _join(client, match.id).json()
++    b = _join(client, match.id, name="Outro", team="gremio").json()
++    assert a["playerId"] == b["playerId"] and b["team"] == "inter"
++    assert len(container.players.list_players(match.id)) == 1
++
++
++def test_invalid_team_rejected(ctx) -> None:
++    client, _, _, match = ctx
++    assert _join(client, match.id, team="flamengo").status_code in (400, 422)
++
++
++@pytest.mark.parametrize("name", ["", "   "])
++def test_empty_name_rejected(ctx, name) -> None:
++    client, _, _, match = ctx
++    assert _join(client, match.id, name=name).status_code in (400, 422)
++
++
++def test_long_name_rejected(ctx) -> None:
++    client, _, _, match = ctx
++    assert _join(client, match.id, name="x" * 200).status_code in (400, 422)
++
++
++def test_name_is_trimmed(ctx) -> None:
++    client, container, _, match = ctx
++    _join(client, match.id, name="  Ana  ")
++    assert container.players.list_players(match.id)[0].name == "Ana"
++
++
++def test_late_join_blocked_when_running(ctx) -> None:
++    client, container, _, match = ctx
++    m = container.matches.get_match(match.id)
++    m.status = MatchStatus.RUNNING
++    container.matches.update_match(m)
++    r = _join(client, match.id, device="late")
++    assert r.status_code == 409 and r.json()["detail"] == "A partida já começou"
++
++
++def test_existing_player_can_rejoin_while_running(ctx) -> None:
++    client, container, _, match = ctx
++    first = _join(client, match.id).json()
++    m = container.matches.get_match(match.id)
++    m.status = MatchStatus.RUNNING
++    container.matches.update_match(m)
++    assert _join(client, match.id).json()["playerId"] == first["playerId"]
++
++
++def test_public_shows_counts(ctx) -> None:
++    client, _, _, match = ctx
++    _join(client, match.id, device="a", team="inter")
++    _join(client, match.id, device="b", team="inter")
++    _join(client, match.id, device="c", team="gremio")
++    body = client.get(f"/api/matches/{match.id}/public").json()
++    assert body["status"] == "lobby" and body["durationS"] == 60
++    assert body["counts"] == {"inter": 2, "gremio": 1}
++    assert body["teams"]["inter"] == {
++        "name": "Inter",
++        "colors": {"primary": "#E5050F", "secondary": "#FFFFFF"},
++    }
++
++
++def test_unknown_match_404(ctx) -> None:
++    client, *_ = ctx
++    assert client.get("/api/matches/NOPE/public").status_code == 404
++    assert _join(client, "NOPE").status_code == 404
++
++
++def test_verify_player_token_rejects_garbage_and_wrong_role(ctx) -> None:
++    import jwt
++
++    _, _, settings, _ = ctx
++    assert verify_player_token("garbage", settings) is None
++    host = jwt.encode({"role": "host"}, settings.SECRET_KEY, algorithm="HS256")
++    assert verify_player_token(host, settings) is None

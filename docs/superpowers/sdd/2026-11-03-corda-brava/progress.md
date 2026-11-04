@@ -103,3 +103,10 @@ Task 7: complete (commits 5f3a796..a56f7fb, review clean).
 Minors deferred (Task 7): (a) durationS on WIN derived from last pull second+1 (Match has no finished_at; optional: add Match.finished_at set in consumer); (b) CASE MISMATCH — analytics `result` lowercase ("inter") vs WS `ended.result` uppercase ("INTER|GREMIO|DRAW") — Task 10/16 must normalise or document; (c) unpinned edge tests (event after durationS, pre-start clamp, unknown player).
 
 NEXT: Task 8 (player API: public info + join, player token). BASE = HEAD after this docs commit.
+
+Task 8: implemented (commit d4df65a; report de2db86; 107 pass; lint clean). deps.py Container (settings, repos, queue, registry, service) lazily cached on app.state.container, routes use ContainerDep, tests override via app.state.container / dependency_overrides[container_dep]. player_session.py: issue_player_token(match_id, player_id, device_id, settings), verify_player_token(token, settings) -> {match_id, player_id, device_id} | None (role=player, never raises, no exp). Routes: GET /api/matches/{id}/public -> {status, teams{inter,gremio{name,colors{primary,secondary}}}, counts, durationS}; POST /api/matches/{id}/players {name,team,deviceId} -> {playerId,playerToken,team}. App-level handlers ConflictError->409, MatchNotFoundError->404 ("Partida não encontrada").
+Task 8: review (sonnet-1M) — Spec ✅, Quality Approved. No Critical/Important.
+Task 8: complete (commits 1b09fd6..d4df65a, review clean).
+Minors deferred (Task 8): (a) require_host uses global get_settings vs container settings -> FIX IN TASK 9 (depend on container_dep); (b) queue/consumer never started -> Task 10 lifespan/start route owns it; (c) lazy non-locked container init -> build eagerly in create_app/lifespan (Task 9/10); (d) re-join issues fresh token != persisted Player.token — never compare against Player.token; (e) LATE_JOIN_POLICY=spectator collapses to 409 (no spectator domain concept; frontend can show read-only from public status).
+
+NEXT: Task 9. BASE = HEAD after this docs commit.
