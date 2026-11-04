@@ -115,3 +115,13 @@ Not touched (still deferred): Task 6 c-f, Task 7 a/c, Task 8 d/e, all of Task 9 
 - Extra WS message types `cancelled` and `reset` (not in §14); reset order as noted above.
 - Analytics endpoint returns 409 for a non-FINISHED match (not specified).
 - No login rate limiting (spec says "lightly"; left for a later task).
+
+---
+
+## Fix round 1 (review minors)
+
+- **Status casing:** `/me` `matchStatus` and `/public` `status` are now uppercase `LOBBY|RUNNING|FINISHED` (the schema fields became `str`); tests updated. This supersedes the casing note in section 2: all payloads now use uppercase status.
+- **PT-BR 401:** host auth detail is now `Token de host inválido ou ausente`. Player side was already PT-BR except the 500 `join failed`, now `Falha ao entrar na partida`.
+- **Login rate limit:** `POST /api/host/login` keeps failed-attempt timestamps per client IP in `Container.login_failures` (in-memory, `shortcut:` commented). 5 failures within a 60 s sliding window gives 429 `Muitas tentativas. Tente novamente em instantes` until old failures age out (a correct password while limited is also refused). Constants: `LOGIN_MAX_FAILURES=5`, `LOGIN_WINDOW_S=60` in `api/host.py`. Tests: limit hit, window expiry.
+- **Test hygiene:** HS512 test uses a 64-byte key (warning gone); the WS ended-wait loop is bounded by a 10 s deadline instead of `range(500)`.
+- **Result:** 144 tests pass, ruff and black clean.
