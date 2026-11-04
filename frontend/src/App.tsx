@@ -1,3 +1,7 @@
+import PlayerEnd from "./pages/PlayerEnd";
+import PlayerJoin from "./pages/PlayerJoin";
+import PlayerPlay from "./pages/PlayerPlay";
+import PlayerWait from "./pages/PlayerWait";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 
 // Placeholder pages; Tasks 12-16 replace each with the real screen.
@@ -20,10 +24,10 @@ export default function App() {
       <Route path="/host/lobby/:id" element={<Placeholder title="Sala de espera" hasId />} />
       <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
       <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
-      <Route path="/j/:id" element={<Placeholder title="Entrar na partida" hasId />} />
-      <Route path="/j/:id/wait" element={<Placeholder title="Aguardando o host iniciar" hasId />} />
-      <Route path="/j/:id/play" element={<Placeholder title="PUXAR!" hasId />} />
-      <Route path="/j/:id/end" element={<Placeholder title="Obrigado por jogar!" hasId />} />
+      <Route path="/j/:id" element={<PlayerJoin />} />
+      <Route path="/j/:id/wait" element={<PlayerWait />} />
+      <Route path="/j/:id/play" element={<PlayerPlay />} />
+      <Route path="/j/:id/end" element={<PlayerEnd />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

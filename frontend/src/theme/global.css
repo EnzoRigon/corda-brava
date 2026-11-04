@@ -52,3 +52,36 @@ img,
 canvas {
   image-rendering: pixelated;
 }
+
+/* ---- Player flow ---- */
+.player-page {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-md);
+  padding: calc(var(--sp-lg) + var(--safe-top)) var(--sp-md) calc(var(--sp-lg) + var(--safe-bottom));
+  text-align: center;
+}
+.player-page.play { justify-content: flex-end; }
+.player-page h1 { font-size: 16px; }
+.join-form { display: flex; flex-direction: column; gap: var(--sp-md); width: 100%; max-width: 420px; }
+.join-form label { display: flex; flex-direction: column; gap: var(--sp-sm); text-align: left; }
+.join-form input { font: inherit; padding: var(--sp-md); background: var(--panel); color: var(--text); border: 2px solid var(--muted); }
+.team-picks { display: flex; gap: var(--sp-md); }
+.team-pick { flex: 1; display: flex; flex-direction: column; align-items: center; gap: var(--sp-sm); padding: var(--sp-md); font: inherit; color: var(--text); background: var(--panel); border: 4px solid transparent; cursor: pointer; }
+.join-submit { font: inherit; padding: var(--sp-md); min-height: 56px; background: var(--text); color: var(--bg); border: 0; cursor: pointer; }
+.pull-button {
+  width: 100%; min-height: 40vh; font: inherit; font-size: 28px; color: #fff; border: 0;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.pull-button:active { transform: scale(0.97); }
+.plus-one {
+  position: absolute; left: 50%; top: 0; pointer-events: none; font-size: 24px;
+  animation: plus-one 0.6s ease-out forwards;
+}
+@keyframes plus-one {
+  from { opacity: 1; transform: translate(-50%, 0); }
+  to { opacity: 0; transform: translate(-50%, -80px); }
+}
