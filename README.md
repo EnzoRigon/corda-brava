@@ -51,7 +51,7 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following 
 │   │   └── queue/             # broker-shaped EventQueue + in-memory impl + factory
 │   ├── tests/                 # pytest (domain rules, repos, queue, settings, health)
 │   └── pyproject.toml
-├── frontend/                  # React 18 + Vite + TS  (NOT YET BUILT — Phase C)
+├── frontend/                  # React 18 + Vite + TS (host + player screens)
 ├── docs/
 │   ├── logo-references/        # owner-authored pixel-art club crests (inter.png, gremio.png)
 │   ├── mascot-references/       # owner-authored mascot references + ready-made sprite assets
