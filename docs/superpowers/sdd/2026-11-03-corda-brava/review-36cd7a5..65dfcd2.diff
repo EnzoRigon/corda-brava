@@ -1,0 +1,536 @@
+diff --git a/.env.example b/.env.example
+index ba3c766..ceaa8b4 100644
+--- a/.env.example
++++ b/.env.example
+@@ -36,6 +36,8 @@ MATCH_DURATION_MAX_S=600
+ ROPE_TARGET=100
+ PULL_UNIT=1.0
+ MAX_PULLS_PER_BATCH=200
++# Anti-cheat: max pulls one player can land per second (excess within a tick is dropped)
++MAX_PULLS_PER_PLAYER_PER_S=15
+ 
+ # --- Idempotency ---
+ BATCH_DEDUP_TTL_S=30
+diff --git a/CLAUDE.md b/CLAUDE.md
+index c78216e..1eb6e19 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -56,7 +56,7 @@ Spawned subagents inherit a large MCP/tool-definition payload (~300k tokens). **
+ 
+ ## Art & assets policy (must hold)
+ 
+-The mascots (Saci / Mosqueteiro) and club crests are **owner-authored image files** committed under `docs/`. The app only **copies and displays** them — **no code may draw, generate, or render the club mascots or crests**. If new art is needed, use original assets/characters, never code that reproduces the club characters.
++The mascots (Saci / Mosqueteiro) and club crests are **owner-authored image files** committed under `docs/`. The app only **copies and displays** them — **no app code (frontend/backend) may draw, generate, or render the club mascots or crests**. (`.claude/skills/pixel-art-studio/pixel-art/corda-brava/` is the owner's sprite-authoring tooling that produced those owner files; it is not app code.) If new art is needed, use original assets/characters, never code that reproduces the club characters.
+ 
+ ## Conventions from the spec worth remembering
+ 
+diff --git a/README.md b/README.md
+index 89d0389..18e41c0 100644
+--- a/README.md
++++ b/README.md
+@@ -34,7 +34,7 @@ Being built task-by-task from the spec in [`prompt.md`](./prompt.md), following
+ | 17 | Dockerfiles + single-port compose (nginx proxy, SQLite volume) + dev override + `.env.example` | ✅ reviewed (Docker runtime not yet run) |
+ | 18 | READMEs + Playwright end-to-end flow (host + player, two browser contexts) | ✅ reviewed |
+ 
+-**Current test count:** 144 passing (backend), 49 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
++**Current test count:** 153 passing (backend), 54 passing (frontend), 1 Playwright e2e. Lint (ruff + black) clean.
+ 
+ **All 18 tasks are built.** Task 18 added the READMEs and a Playwright end-to-end flow (green against the Vite dev stack). Docker (`docker compose up`) has **not** been run: Docker was unavailable in the build environment. See the [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md) for details.
+ 
+@@ -151,7 +151,7 @@ workers or replicas would split a match's state. Scaling out needs the Azure que
+ 
+ ## Art & assets policy (important)
+ 
+-The two mascots — Inter's **Saci** and Grêmio's **Mosqueteiro** — and the club crests are **image files authored and committed by the project owner** (under `docs/mascot-references/.../assets/` and `docs/logo-references/`). The application **copies and displays those files**; **no code draws, generates, or renders the club mascots or crests**. This keeps the project self-contained with the owner's own assets and avoids any code-level reproduction of the characters. If you extend the art, add original assets or original characters — do not write code that renders the club mascots/crests.
++The two mascots — Inter's **Saci** and Grêmio's **Mosqueteiro** — and the club crests are **image files authored and committed by the project owner** (under `docs/mascot-references/.../assets/` and `docs/logo-references/`). The application **copies and displays those files**; **no code draws, generates, or renders the club mascots or crests**. This keeps the project self-contained with the owner's own assets and avoids any code-level reproduction of the characters. **Deliberate deviation from `prompt.md` §1:** the spec asks for the mascots/crests to be drawn in code; this project instead uses the owner-authored image files above. If you extend the art, add original assets or original characters — do not write code that renders the club mascots/crests.
+ 
+ ---
+ 
+diff --git a/backend/app/api/host.py b/backend/app/api/host.py
+index 60172f3..42b7dea 100644
+--- a/backend/app/api/host.py
++++ b/backend/app/api/host.py
+@@ -81,6 +81,8 @@ def _created(c: Container, m: Match) -> CreateMatchResponse:
+ def login(body: HostLoginRequest, c: ContainerDep, request: Request) -> HostLoginResponse:
+     ip = request.client.host if request.client else "?"
+     now = time.monotonic()
++    for k in [k for k, v in c.login_failures.items() if not v or now - v[-1] >= LOGIN_WINDOW_S]:
++        del c.login_failures[k]  # bound memory: drop IPs with no failure in the window
+     recent = [t for t in c.login_failures.get(ip, []) if now - t < LOGIN_WINDOW_S]
+     if len(recent) >= LOGIN_MAX_FAILURES:
+         c.login_failures[ip] = recent
+@@ -124,6 +126,8 @@ async def start_match(match_id: str, c: ContainerDep) -> MatchView:
+ async def cancel_match(match_id: str, c: ContainerDep) -> MatchView:
+     if c.matches.get_match(match_id) is None:
+         raise MatchNotFoundError(match_id)
++    if c.matches.get_match(match_id).status is MatchStatus.FINISHED:
++        raise HTTPException(status_code=409, detail="A partida já terminou")
+     # service.cancel() clears the WS listeners, so tell them first.
+     await c.registry.broadcast(match_id, {"type": "cancelled"})
+     await c.service.cancel(match_id)
+diff --git a/backend/app/core/app_factory.py b/backend/app/core/app_factory.py
+index f7f0817..8aeaae0 100644
+--- a/backend/app/core/app_factory.py
++++ b/backend/app/core/app_factory.py
+@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
+ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+     c = get_container(app)  # eager build: DB bootstrap + queue/registry/service
+     await c.queue.start()
++    c.service.resume_running()
+     try:
+         yield
+     finally:
+diff --git a/backend/app/core/settings.py b/backend/app/core/settings.py
+index ad883be..ffbf07e 100644
+--- a/backend/app/core/settings.py
++++ b/backend/app/core/settings.py
+@@ -50,6 +50,7 @@ class Settings(BaseSettings):
+     ROPE_TARGET: int = 100
+     PULL_UNIT: float = 1.0
+     MAX_PULLS_PER_BATCH: int = 200
++    MAX_PULLS_PER_PLAYER_PER_S: int = 15  # anti-cheat: per-player cap, applied per tick
+ 
+     # ── Idempotency ───────────────────────────────────────────────────────────
+     BATCH_DEDUP_TTL_S: int = 30
+diff --git a/backend/app/repositories/interfaces.py b/backend/app/repositories/interfaces.py
+index fd9a7b8..0ffc65a 100644
+--- a/backend/app/repositories/interfaces.py
++++ b/backend/app/repositories/interfaces.py
+@@ -47,6 +47,10 @@ class MatchRepository(Protocol):
+         """Atomically persist new events and the match update (single transaction)."""
+         ...
+ 
++    def list_running(self) -> list[Match]:
++        """Return every match currently in RUNNING status (restart recovery)."""
++        ...
++
+ 
+ class PlayerRepository(Protocol):
+     """Persistence interface for Player entities.
+diff --git a/backend/app/repositories/sqlite/match_repo.py b/backend/app/repositories/sqlite/match_repo.py
+index c8c6292..78ea6c4 100644
+--- a/backend/app/repositories/sqlite/match_repo.py
++++ b/backend/app/repositories/sqlite/match_repo.py
+@@ -156,6 +156,10 @@ class SQLiteMatchRepository:
+             return None
+         return _row_to_match(row)
+ 
++    def list_running(self) -> list[Match]:
++        rows = self._conn.execute("SELECT * FROM matches WHERE status = 'running'").fetchall()
++        return [_row_to_match(r) for r in rows]
++
+     def update_match(self, match: Match) -> Match:
+         """UPDATE the mutable runtime columns of an existing Match."""
+         params = _update_params(match)
+diff --git a/backend/app/services/consumer.py b/backend/app/services/consumer.py
+index df59972..df8c4da 100644
+--- a/backend/app/services/consumer.py
++++ b/backend/app/services/consumer.py
+@@ -70,6 +70,9 @@ class ConsumerLoop:
+         abandon, drop, mine, new_events = [], [], [], []
+         delta = {Team.INTER: 0, Team.GREMIO: 0}
+         seen: set[str] = set()
++        s = self._settings
++        cap = max(1, round(s.MAX_PULLS_PER_PLAYER_PER_S * s.TICK_INTERVAL_MS / 1000))
++        landed: dict[str, int] = {}
+         for m in msgs:
+             ev = m.payload
+             if ev.match_id != self.match_id:
+@@ -85,6 +88,10 @@ class ConsumerLoop:
+                 drop.append(m)  # duplicate / redelivery: no effect, just ack
+             else:
+                 seen.add(ev.batch_id)
++                # anti-cheat: excess over the per-tick cap is dropped, not carried over
++                room = cap - landed.get(ev.player_id, 0)
++                ev = ev.model_copy(update={"count": min(ev.count, room)})
++                landed[ev.player_id] = landed.get(ev.player_id, 0) + ev.count
+                 new_events.append(ev)
+                 delta[ev.team] += ev.count
+                 mine.append(m)
+diff --git a/backend/app/services/match_service.py b/backend/app/services/match_service.py
+index c3569d8..c5bc46e 100644
+--- a/backend/app/services/match_service.py
++++ b/backend/app/services/match_service.py
+@@ -95,7 +95,7 @@ class MatchService:
+     def update_duration(self, match_id: str, duration_s: int) -> Match:
+         m = self._get(match_id)
+         if m.status is not MatchStatus.LOBBY:
+-            raise ConflictError("duration can only change in LOBBY")
++            raise ConflictError("A duração só pode ser alterada no lobby")
+         m.config.duration_s = self._check_duration(duration_s)
+         return self._matches.update_match(m)
+ 
+@@ -103,11 +103,21 @@ class MatchService:
+         """LOBBY -> RUNNING and spin up the consumer task (needs a running event loop)."""
+         m = self._get(match_id)
+         if m.status is not MatchStatus.LOBBY:
+-            raise ConflictError(f"cannot start a match in {m.status.value}")
++            raise ConflictError("A partida já foi iniciada ou encerrada")
+         m.status = MatchStatus.RUNNING
+         m.started_at = self._clock().astimezone(UTC)
+         m.ends_at = m.started_at + timedelta(seconds=m.config.duration_s)
+         m = self._matches.update_match(m)
++        self._spawn_loop(match_id)
++        return m
++
++    def resume_running(self) -> None:
++        """Restart recovery: re-launch loops for RUNNING matches (expired ones end on tick 1)."""
++        for m in self._matches.list_running():
++            if not self._registry.is_running(m.id):
++                self._spawn_loop(m.id)
++
++    def _spawn_loop(self, match_id: str) -> None:
+         loop = ConsumerLoop(
+             match_id,
+             matches=self._matches,
+@@ -119,7 +129,6 @@ class MatchService:
+             clock=self._clock,
+         )
+         self._registry.start_loop(match_id, loop.run())
+-        return m
+ 
+     async def cancel(self, match_id: str) -> Match:
+         """Tear down the loop; an unfinished match becomes FINISHED with no result."""
+diff --git a/backend/app/services/registry.py b/backend/app/services/registry.py
+index 785e858..1d6f0eb 100644
+--- a/backend/app/services/registry.py
++++ b/backend/app/services/registry.py
+@@ -10,6 +10,7 @@ from typing import Any
+ Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
+ 
+ log = logging.getLogger(__name__)
++BROADCAST_TIMEOUT_S = 1.0
+ 
+ 
+ class MatchRegistry:
+@@ -27,7 +28,7 @@ class MatchRegistry:
+         """Send to every listener; a failing listener is dropped, never breaks the loop."""
+         for cb in list(self._listeners.get(match_id, ())):
+             try:
+-                await cb(payload)
++                await asyncio.wait_for(cb(payload), BROADCAST_TIMEOUT_S)
+             except Exception:  # noqa: BLE001 - dead socket etc.
+                 self._listeners.get(match_id, set()).discard(cb)
+ 
+diff --git a/backend/tests/api/test_host_routes.py b/backend/tests/api/test_host_routes.py
+index 9160105..d7c0f65 100644
+--- a/backend/tests/api/test_host_routes.py
++++ b/backend/tests/api/test_host_routes.py
+@@ -129,6 +129,55 @@ def test_cancel_finishes_match(client, auth) -> None:
+     assert r.status_code == 200 and r.json()["status"] == "FINISHED" and r.json()["result"] is None
+ 
+ 
++def test_cancel_finished_match_409(client, auth) -> None:
++    mid = _create(client, auth, durationS=30).json()["matchId"]
++    client.post(f"/api/host/matches/{mid}/cancel", headers=auth)
++    assert client.post(f"/api/host/matches/{mid}/cancel", headers=auth).status_code == 409
++
++
++def test_login_failures_pruned_and_ignores_spoof_nothing_left(client, monkeypatch) -> None:
++    import app.api.host as host
++
++    for _ in range(3):
++        client.post("/api/host/login", json={"password": "x"})
++    c = client.app.state.container
++    assert len(c.login_failures) == 1
++    monkeypatch.setattr(host, "LOGIN_WINDOW_S", 0.0)
++    client.post("/api/host/login", json={"password": PASSWORD})
++    assert c.login_failures == {}
++
++
++def test_restart_recovers_running_match(tmp_path) -> None:
++    from datetime import UTC, datetime, timedelta
++
++    from app.domain.enums import MatchStatus
++    from app.repositories.sqlite.match_repo import SQLiteMatchRepository
++
++    db = tmp_path / "r.db"
++    settings = Settings(
++        DATABASE_URL=f"sqlite:///{db.as_posix()}", SECRET_KEY="s" * 32, TICK_INTERVAL_MS=20
++    )
++    with TestClient(create_app(settings)) as c1:  # first boot creates the DB
++        svc = c1.app.state.container.service
++        live, dead = svc.create_match(60), svc.create_match(60)
++    repo = SQLiteMatchRepository(db)
++    for m, delta in ((live, 60), (dead, -5)):
++        m = repo.get_match(m.id)
++        m.status = MatchStatus.RUNNING
++        m.started_at = datetime.now(UTC)
++        m.ends_at = m.started_at + timedelta(seconds=delta)
++        repo.update_match(m)
++    close_connection(db)
++    with TestClient(create_app(settings)) as c2:
++        reg = c2.app.state.container.registry
++        import time
++
++        time.sleep(0.3)
++        assert reg.is_running(live.id)
++        assert c2.app.state.container.matches.get_match(dead.id).status is MatchStatus.FINISHED
++    close_connection(db)
++
++
+ def test_reset_returns_new_lobby_match(client, auth) -> None:
+     mid = _create(client, auth, durationS=40, balanceMode="raw").json()["matchId"]
+     client.post(f"/api/host/matches/{mid}/start", headers=auth)
+diff --git a/backend/tests/api/test_host_ws.py b/backend/tests/api/test_host_ws.py
+index e7d3744..a15e3f3 100644
+--- a/backend/tests/api/test_host_ws.py
++++ b/backend/tests/api/test_host_ws.py
+@@ -24,6 +24,7 @@ def client(tmp_path: Path):
+         SECRET_KEY="s" * 32,
+         HOST_PASSWORD=PASSWORD,
+         TICK_INTERVAL_MS=20,
++        MAX_PULLS_PER_PLAYER_PER_S=1000,
+         MATCH_DURATION_MIN_S=1,
+     )
+     with TestClient(create_app(settings)) as c:
+diff --git a/backend/tests/services/test_consumer.py b/backend/tests/services/test_consumer.py
+index b495d19..2c69b54 100644
+--- a/backend/tests/services/test_consumer.py
++++ b/backend/tests/services/test_consumer.py
+@@ -30,7 +30,12 @@ class Env:
+         self.db = tmp_path / "t.db"
+         bootstrap_db(self.db)
+         self.now = T0
+-        self.settings = Settings(ROPE_TARGET=5, TEAM_BALANCE_MODE="raw", TICK_INTERVAL_MS=1)
++        self.settings = Settings(
++            ROPE_TARGET=5,
++            TEAM_BALANCE_MODE="raw",
++            TICK_INTERVAL_MS=1,
++            MAX_PULLS_PER_PLAYER_PER_S=10**6,
++        )
+         self.matches = SQLiteMatchRepository(self.db)
+         self.players = SQLitePlayerRepository(self.db)
+         self.events = SQLiteEventRepository(self.db)
+@@ -116,6 +121,17 @@ async def test_tick_persists_moves_rope_and_acks(env: Env) -> None:
+     assert tick["scores"]["gremio"]["pulls"] == 3 and tick["remainingS"] == 60
+ 
+ 
++async def test_per_player_cap_limits_one_tick(env: Env) -> None:
++    env.settings.MAX_PULLS_PER_PLAYER_PER_S = 10  # tick 1ms -> floor of 1 pull
++    env.settings.TICK_INTERVAL_MS = 500  # cap = 5
++    loop = env.force_running()
++    await env.pull(Team.INTER, 200, "f1")
++    await env.pull(Team.INTER, 200, "f2")  # same player, same tick: shares the cap
++    await loop.tick()
++    assert env.matches.get_match(env.match.id).rope_position == -5
++    assert sum(e.count for e in env.events.list_events(env.match.id)) == 5
++
++
+ async def test_duplicate_batch_id_has_no_extra_effect(env: Env) -> None:
+     loop = env.force_running()
+     await env.pull(Team.GREMIO, 2, "dup")
+diff --git a/backend/tests/services/test_match_service.py b/backend/tests/services/test_match_service.py
+index 49892bf..0f9a9b5 100644
+--- a/backend/tests/services/test_match_service.py
++++ b/backend/tests/services/test_match_service.py
+@@ -43,6 +43,33 @@ async def test_update_duration_only_in_lobby(env: Env) -> None:
+     await env.svc.cancel(env.match.id)
+ 
+ 
++async def test_ptbr_conflict_messages(env: Env) -> None:
++    env.svc.start(env.match.id)
++    with pytest.raises(ConflictError, match="já foi iniciada"):
++        env.svc.start(env.match.id)
++    with pytest.raises(ConflictError, match="só pode ser alterada"):
++        env.svc.update_duration(env.match.id, 100)
++    await env.svc.cancel(env.match.id)
++
++
++async def test_resume_running_restarts_loop_and_finishes_expired(env: Env) -> None:
++    env.force_running()  # RUNNING in the repo, no loop (as after a restart)
++    assert not env.registry.is_running(env.match.id)
++    env.svc.resume_running()
++    assert env.registry.is_running(env.match.id)
++    await env.svc.cancel(env.match.id)
++
++    env.force_running()
++    env.now = T0 + __import__("datetime").timedelta(seconds=61)  # expired while down
++    env.svc.resume_running()
++    for _ in range(50):
++        if not env.registry.is_running(env.match.id):
++            break
++        await __import__("asyncio").sleep(0.01)
++    m = env.matches.get_match(env.match.id)
++    assert m.status is MatchStatus.FINISHED and m.end_reason is not None
++
++
+ def test_view_lobby_remaining(env: Env) -> None:
+     v = env.svc.get_match_view(env.match.id)
+     assert v.status is MatchStatus.LOBBY and v.remaining_s == 60
+diff --git a/backend/tests/services/test_registry_broadcast.py b/backend/tests/services/test_registry_broadcast.py
+new file mode 100644
+index 0000000..bdff733
+--- /dev/null
++++ b/backend/tests/services/test_registry_broadcast.py
+@@ -0,0 +1,20 @@
++import asyncio
++
++from app.services import registry as reg_mod
++from app.services.registry import MatchRegistry
++
++
++async def test_slow_listener_dropped_on_timeout(monkeypatch) -> None:
++    monkeypatch.setattr(reg_mod, "BROADCAST_TIMEOUT_S", 0.05)
++    r, got = MatchRegistry(), []
++
++    async def slow(_):
++        await asyncio.sleep(5)
++
++    async def ok(p):
++        got.append(p)
++
++    r.add_listener("m", slow)
++    r.add_listener("m", ok)
++    await r.broadcast("m", {"a": 1})
++    assert got == [{"a": 1}] and r._listeners["m"] == {ok}
+diff --git a/frontend/nginx.conf b/frontend/nginx.conf
+index ae1dbf1..ee558cf 100644
+--- a/frontend/nginx.conf
++++ b/frontend/nginx.conf
+@@ -17,7 +17,7 @@ server {
+     proxy_set_header Upgrade $http_upgrade;
+     proxy_set_header Connection $connection_upgrade;
+     proxy_set_header Host $host;
+-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-For $remote_addr;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     proxy_read_timeout 3600s;
+   }
+diff --git a/frontend/src/components/ResultBanner.test.tsx b/frontend/src/components/ResultBanner.test.tsx
+new file mode 100644
+index 0000000..1f967b5
+--- /dev/null
++++ b/frontend/src/components/ResultBanner.test.tsx
+@@ -0,0 +1,14 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { describe, expect, it } from "vitest";
++import ResultBanner from "./ResultBanner";
++
++describe("ResultBanner", () => {
++  it("shows a cancelled title when there is no result", () => {
++    const html = renderToStaticMarkup(<ResultBanner result={null} endReason={null} />);
++    expect(html).toContain("Partida cancelada");
++    expect(html).not.toContain("Empate");
++  });
++  it("still shows a draw", () => {
++    expect(renderToStaticMarkup(<ResultBanner result="DRAW" endReason="timeout" />)).toContain("Empate!");
++  });
++});
+diff --git a/frontend/src/components/ResultBanner.tsx b/frontend/src/components/ResultBanner.tsx
+index 7f83d9f..e0f1d3d 100644
+--- a/frontend/src/components/ResultBanner.tsx
++++ b/frontend/src/components/ResultBanner.tsx
+@@ -3,9 +3,15 @@ import type { EndReason, MatchResult } from "../types/api";
+ const NAME = { INTER: "Inter", GREMIO: "Grêmio" } as const;
+ 
+ export default function ResultBanner({ result, endReason }: { result: MatchResult | null; endReason: EndReason | null }) {
++  if (!result)
++    return (
++      <header className="result-banner">
++        <h1>Partida cancelada</h1>
++      </header>
++    );
+   const win = result === "INTER" || result === "GREMIO";
+   return (
+-    <header className={`result-banner ${result?.toLowerCase() ?? ""}`}>
++    <header className={`result-banner ${result.toLowerCase()}`}>
+       <h1>{win ? `${NAME[result]} venceu a Corda Brava!` : "Empate! Ninguém levou a corda."}</h1>
+       <p>{endReason === "win" ? "A corda foi arrastada até o fim!" : "O tempo acabou."}</p>
+     </header>
+diff --git a/frontend/src/hooks/useDeviceId.ts b/frontend/src/hooks/useDeviceId.ts
+index acb902e..2a4110f 100644
+--- a/frontend/src/hooks/useDeviceId.ts
++++ b/frontend/src/hooks/useDeviceId.ts
+@@ -2,7 +2,8 @@ import { useState } from "react";
+ 
+ const KEY = "cb.deviceId";
+ 
+-function newId(): string {
++/** randomUUID only exists in secure contexts (https/localhost); plain http://<LAN-IP> needs the fallback. */
++export function newId(): string {
+   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+     const r = (Math.random() * 16) | 0;
+diff --git a/frontend/src/hooks/usePullBuffer.test.ts b/frontend/src/hooks/usePullBuffer.test.ts
+index 5b52b50..66fcb6f 100644
+--- a/frontend/src/hooks/usePullBuffer.test.ts
++++ b/frontend/src/hooks/usePullBuffer.test.ts
+@@ -46,6 +46,15 @@ describe("usePullBuffer", () => {
+     expect(send).toHaveBeenCalledTimes(1); // 2xx cleared it
+   });
+ 
++  it("still posts with a batchId when crypto.randomUUID is missing (http LAN)", async () => {
++    vi.stubGlobal("crypto", {});
++    tap(2);
++    await tick();
++    vi.unstubAllGlobals();
++    expect(send).toHaveBeenCalledTimes(1);
++    expect(send.mock.calls[0][1].batchId).toMatch(/^[0-9a-f-]{36}$/);
++  });
++
+   it("resends the same batchId after failure, then uses a new id", async () => {
+     send.mockRejectedValueOnce(new Error("net"));
+     tap(3);
+diff --git a/frontend/src/hooks/usePullBuffer.ts b/frontend/src/hooks/usePullBuffer.ts
+index ae5b1f6..310eaf6 100644
+--- a/frontend/src/hooks/usePullBuffer.ts
++++ b/frontend/src/hooks/usePullBuffer.ts
+@@ -1,6 +1,7 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { API_BASE, ApiError } from "../api/client";
+ import { sendPulls } from "../api/playerApi";
++import { newId } from "./useDeviceId";
+ import type { PullRequest } from "../types/api";
+ 
+ export const MAX_PULLS_PER_BATCH = 200;
+@@ -32,7 +33,7 @@ export function usePullBuffer({ matchId, playerId, playerToken, flushIntervalMs,
+     if (!unacked.current && pending.current > 0) {
+       const count = Math.min(pending.current, MAX_PULLS_PER_BATCH);
+       pending.current -= count;
+-      unacked.current = { count, batchId: crypto.randomUUID() };
++      unacked.current = { count, batchId: newId() };
+     }
+     return unacked.current;
+   };
+diff --git a/frontend/src/pages/PlayerEnd.test.tsx b/frontend/src/pages/PlayerEnd.test.tsx
+new file mode 100644
+index 0000000..07a7417
+--- /dev/null
++++ b/frontend/src/pages/PlayerEnd.test.tsx
+@@ -0,0 +1,22 @@
++import { renderToStaticMarkup } from "react-dom/server";
++import { MemoryRouter } from "react-router-dom";
++import { describe, expect, it, vi } from "vitest";
++import PlayerEnd from "./PlayerEnd";
++
++const state = vi.hoisted(() => ({ me: null as unknown }));
++vi.mock("../hooks/useMePolling", () => ({
++  useMePolling: () => ({ session: { team: "inter" }, me: state.me }),
++}));
++
++const render = () => renderToStaticMarkup(<MemoryRouter><PlayerEnd /></MemoryRouter>);
++
++describe("PlayerEnd", () => {
++  it("titles a cancelled match", () => {
++    state.me = { screen: "end", result: null };
++    expect(render()).toContain("Partida cancelada");
++  });
++  it("keeps the normal result titles", () => {
++    state.me = { screen: "end", result: "INTER" };
++    expect(render()).toContain("Seu time venceu!");
++  });
++});
+diff --git a/frontend/src/pages/PlayerEnd.tsx b/frontend/src/pages/PlayerEnd.tsx
+index 5d87c1b..c26b64a 100644
+--- a/frontend/src/pages/PlayerEnd.tsx
++++ b/frontend/src/pages/PlayerEnd.tsx
+@@ -9,7 +9,7 @@ export default function PlayerEnd() {
+   const draw = me?.result === "DRAW";
+   const won = me?.result === session.team.toUpperCase();
+   const state: MascotState = !me?.result || draw ? "idle" : won ? "happy" : "crying";
+-  const title = !me?.result ? "" : draw ? "Empate!" : won ? "Seu time venceu!" : "Seu time perdeu!";
++  const title = !me ? "" : !me.result ? "Partida cancelada" : draw ? "Empate!" : won ? "Seu time venceu!" : "Seu time perdeu!";
+   return (
+     <main className="player-page">
+       <Mascot team={session.team} state={state} size={160} />
