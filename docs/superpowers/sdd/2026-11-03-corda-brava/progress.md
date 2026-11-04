@@ -152,3 +152,11 @@ Task 13: complete (commits 64cbc62..f08a3bd, review clean).
 Minors deferred (Task 13): (a) no test for stop-flag reset on id/token change or 401/403 stop paths; (b) beacon to a cross-origin API_BASE would need CORS preflight — fine same-origin/proxied (note for Task 17 Docker).
 
 NEXT: Task 14 (player pages). BASE = HEAD after this docs commit.
+
+Task 14: implemented (commit 9cd6e92; report e32a059; vitest 25/25). Pages PlayerJoin (/j/:id: /public teams+crests+counts, name trim/cap 24, team radio, join with deviceId, API detail verbatim e.g. 409 "A partida já começou"), PlayerWait ("Aguardando o host iniciar", mascot idle), PlayerPlay (PullButton PUXAR + CSS "+1", usePullBuffer flush 500ms enabled only on screen=play, mascot straining), PlayerEnd (result + "Obrigado por jogar!", no analytics; mascot happy/crying, idle on DRAW). Session localStorage `cb.session.<matchId>` = {playerId, playerToken, team} (try/catch). useMePolling polls /me 1s, navigates (replace) to /j/:id/<screen>; missing session/401/403 -> clear + back to join. Join -> /wait, wait forwards to real screen (one extra hop).
+Task 14: review (sonnet-1M) — Spec ✅, Quality Approved; reload/no-leak/no-loop/no-double-fire/multi-touch all confirmed.
+Task 14: polish round (commit 7ecccb8; report f8c3385; vitest 31/31, tsc/build/lint clean): /me in-flight guard (no overlapping polls), polling stops on end, 404 treated like 401/403; PullButton pops keyed by counter ref, button!==0 ignored, context menu blocked; new PullButton + polling tests. Verified by controller: vitest 31/31, tsc clean.
+Task 14: complete (commits 69fdbe4..7ecccb8, review clean).
+Minors deferred (Task 14): (a) taps in the last ~second before screen flips to end are dropped (server would 409 anyway); (b) no tests for PlayerPlay enabled gating / PlayerEnd mapping; (c) not checked on a real phone/browser (Task 18 E2E).
+
+NEXT: Task 15 (useHostSocket). BASE = HEAD after this docs commit.

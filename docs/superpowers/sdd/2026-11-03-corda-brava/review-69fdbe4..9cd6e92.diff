@@ -1,0 +1,541 @@
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 6cd299b..de34e92 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,3 +1,7 @@
++import PlayerEnd from "./pages/PlayerEnd";
++import PlayerJoin from "./pages/PlayerJoin";
++import PlayerPlay from "./pages/PlayerPlay";
++import PlayerWait from "./pages/PlayerWait";
+ import { Navigate, Route, Routes, useParams } from "react-router-dom";
+ 
+ // Placeholder pages; Tasks 12-16 replace each with the real screen.
+@@ -20,10 +24,10 @@ export default function App() {
+       <Route path="/host/lobby/:id" element={<Placeholder title="Sala de espera" hasId />} />
+       <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
+       <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
+-      <Route path="/j/:id" element={<Placeholder title="Entrar na partida" hasId />} />
+-      <Route path="/j/:id/wait" element={<Placeholder title="Aguardando o host iniciar" hasId />} />
+-      <Route path="/j/:id/play" element={<Placeholder title="PUXAR!" hasId />} />
+-      <Route path="/j/:id/end" element={<Placeholder title="Obrigado por jogar!" hasId />} />
++      <Route path="/j/:id" element={<PlayerJoin />} />
++      <Route path="/j/:id/wait" element={<PlayerWait />} />
++      <Route path="/j/:id/play" element={<PlayerPlay />} />
++      <Route path="/j/:id/end" element={<PlayerEnd />} />
+       <Route path="*" element={<Navigate to="/" replace />} />
+     </Routes>
+   );
+diff --git a/frontend/src/components/PullButton.tsx b/frontend/src/components/PullButton.tsx
+new file mode 100644
+index 0000000..adcc0b3
+--- /dev/null
++++ b/frontend/src/components/PullButton.tsx
+@@ -0,0 +1,34 @@
++import { useState } from "react";
++
++/** Big PUXAR button. Fires on pointerdown (no 300ms click delay); click only handles keyboard (detail === 0). */
++export function PullButton({ onPull, color }: { onPull: () => void; color: string }) {
++  const [pops, setPops] = useState<number[]>([]);
++  const fire = () => {
++    onPull();
++    const n = performance.now();
++    setPops((p) => [...p.slice(-5), n]);
++  };
++  return (
++    <div style={{ position: "relative", width: "100%" }}>
++      {pops.map((n) => (
++        <span key={n} className="plus-one" aria-hidden="true" onAnimationEnd={() => setPops((p) => p.filter((x) => x !== n))}>
++          +1
++        </span>
++      ))}
++      <button
++        type="button"
++        className="pull-button"
++        style={{ background: color }}
++        onPointerDown={(e) => {
++          e.preventDefault();
++          fire();
++        }}
++        onClick={(e) => {
++          if (e.detail === 0) fire(); // keyboard activation only
++        }}
++      >
++        PUXAR
++      </button>
++    </div>
++  );
++}
+diff --git a/frontend/src/hooks/useMePolling.test.ts b/frontend/src/hooks/useMePolling.test.ts
+new file mode 100644
+index 0000000..bd090a5
+--- /dev/null
++++ b/frontend/src/hooks/useMePolling.test.ts
+@@ -0,0 +1,75 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { ApiError } from "../api/client";
++import * as api from "../api/playerApi";
++import { useMePolling } from "./useMePolling";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++const getMe = vi.spyOn(api, "getMe");
++let loc: string;
++let unmount: () => void;
++
++function Waiting() {
++  useMePolling("m1", "wait");
++  loc = useLocation().pathname;
++  return null;
++}
++function Other() {
++  loc = useLocation().pathname;
++  return null;
++}
++const tick = (ms = 1000) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
++
++beforeEach(async () => {
++  vi.useFakeTimers();
++  localStorage.setItem("cb.session.m1", JSON.stringify({ playerId: "p", playerToken: "t", team: "inter" }));
++  getMe.mockReset().mockResolvedValue({ screen: "wait", team: "inter", matchStatus: "LOBBY" });
++  const root = createRoot(document.createElement("div"));
++  await act(async () =>
++    root.render(
++      createElement(
++        MemoryRouter,
++        { initialEntries: ["/j/m1/wait"] },
++        createElement(
++          Routes,
++          null,
++          createElement(Route, { path: "/j/:id/wait", element: createElement(Waiting) }),
++          createElement(Route, { path: "*", element: createElement(Other) }),
++        ),
++      ),
++    ),
++  );
++  unmount = () => act(() => root.unmount());
++});
++afterEach(() => {
++  unmount();
++  vi.useRealTimers();
++});
++
++describe("useMePolling", () => {
++  it("polls with the stored token and navigates when the screen changes", async () => {
++    expect(getMe).toHaveBeenCalledWith("m1", "p", "t");
++    expect(loc).toBe("/j/m1/wait");
++    getMe.mockResolvedValue({ screen: "play", team: "inter", matchStatus: "RUNNING" });
++    await tick();
++    expect(loc).toBe("/j/m1/play");
++  });
++
++  it("returns to join and clears the session on 401", async () => {
++    getMe.mockRejectedValue(new ApiError(401, "x"));
++    await tick();
++    expect(loc).toBe("/j/m1");
++    expect(localStorage.getItem("cb.session.m1")).toBeNull();
++  });
++
++  it("stops polling on unmount", async () => {
++    unmount();
++    const n = getMe.mock.calls.length;
++    await tick(3000);
++    expect(getMe.mock.calls.length).toBe(n);
++    unmount = () => {};
++  });
++});
+diff --git a/frontend/src/hooks/useMePolling.ts b/frontend/src/hooks/useMePolling.ts
+new file mode 100644
+index 0000000..b1c854c
+--- /dev/null
++++ b/frontend/src/hooks/useMePolling.ts
+@@ -0,0 +1,68 @@
++import { useEffect, useState } from "react";
++import { useNavigate } from "react-router-dom";
++import { ApiError } from "../api/client";
++import { getMe } from "../api/playerApi";
++import type { JoinResponse, MeResponse } from "../types/api";
++
++export const ME_POLL_MS = 1000;
++export type Screen = MeResponse["screen"];
++const key = (matchId: string) => `cb.session.${matchId}`;
++
++export function loadSession(matchId: string): JoinResponse | null {
++  try {
++    const s = JSON.parse(localStorage.getItem(key(matchId)) ?? "null");
++    return s?.playerId && s?.playerToken && s?.team ? s : null;
++  } catch {
++    return null;
++  }
++}
++export function saveSession(matchId: string, s: JoinResponse) {
++  try {
++    localStorage.setItem(key(matchId), JSON.stringify(s));
++  } catch {
++    // storage blocked: the player simply cannot resume after a reload
++  }
++}
++function clearSession(matchId: string) {
++  try {
++    localStorage.removeItem(key(matchId));
++  } catch {
++    // ignore
++  }
++}
++
++/** Polls /me with the stored token; navigates when the server's screen differs from `page`. */
++export function useMePolling(matchId: string, page: Screen) {
++  const navigate = useNavigate();
++  const [session] = useState(() => loadSession(matchId));
++  const [me, setMe] = useState<MeResponse | null>(null);
++
++  useEffect(() => {
++    if (!session) {
++      navigate(`/j/${matchId}`, { replace: true });
++      return;
++    }
++    let alive = true;
++    const poll = async () => {
++      try {
++        const r = await getMe(matchId, session.playerId, session.playerToken);
++        if (!alive) return;
++        setMe(r);
++        if (r.screen !== page) navigate(`/j/${matchId}/${r.screen}`, { replace: true });
++      } catch (e) {
++        if (alive && e instanceof ApiError && (e.status === 401 || e.status === 403)) {
++          clearSession(matchId);
++          navigate(`/j/${matchId}`, { replace: true });
++        } // other errors: keep polling
++      }
++    };
++    void poll();
++    const id = setInterval(() => void poll(), ME_POLL_MS);
++    return () => {
++      alive = false;
++      clearInterval(id);
++    };
++  }, [matchId, page, session, navigate]);
++
++  return { session, me };
++}
+diff --git a/frontend/src/pages/PlayerEnd.tsx b/frontend/src/pages/PlayerEnd.tsx
+new file mode 100644
+index 0000000..5d87c1b
+--- /dev/null
++++ b/frontend/src/pages/PlayerEnd.tsx
+@@ -0,0 +1,20 @@
++import { useParams } from "react-router-dom";
++import { Mascot, type MascotState } from "../components/Mascot";
++import { useMePolling } from "../hooks/useMePolling";
++
++export default function PlayerEnd() {
++  const { id = "" } = useParams();
++  const { session, me } = useMePolling(id, "end");
++  if (!session) return null;
++  const draw = me?.result === "DRAW";
++  const won = me?.result === session.team.toUpperCase();
++  const state: MascotState = !me?.result || draw ? "idle" : won ? "happy" : "crying";
++  const title = !me?.result ? "" : draw ? "Empate!" : won ? "Seu time venceu!" : "Seu time perdeu!";
++  return (
++    <main className="player-page">
++      <Mascot team={session.team} state={state} size={160} />
++      <h1>{title}</h1>
++      <p>Obrigado por jogar!</p>
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/PlayerJoin.test.tsx b/frontend/src/pages/PlayerJoin.test.tsx
+new file mode 100644
+index 0000000..ff9d706
+--- /dev/null
++++ b/frontend/src/pages/PlayerJoin.test.tsx
+@@ -0,0 +1,107 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { ApiError } from "../api/client";
++import * as api from "../api/playerApi";
++import PlayerJoin from "./PlayerJoin";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++const getPublic = vi.spyOn(api, "getPublic");
++const join = vi.spyOn(api, "join");
++const colors = { primary: "#000", secondary: "#fff" };
++
++function Where() {
++  return createElement("div", { "data-testid": "loc" }, useLocation().pathname);
++}
++let host: HTMLDivElement;
++let unmount: () => void;
++
++async function mount() {
++  host = document.createElement("div");
++  document.body.append(host);
++  const root = createRoot(host);
++  await act(async () =>
++    root.render(
++      createElement(
++        MemoryRouter,
++        { initialEntries: ["/j/m1"] },
++        createElement(
++          Routes,
++          null,
++          createElement(Route, { path: "/j/:id", element: createElement(PlayerJoin) }),
++          createElement(Route, { path: "*", element: createElement(Where) }),
++        ),
++      ),
++    ),
++  );
++  unmount = () => act(() => root.unmount());
++}
++const type = (el: HTMLInputElement, v: string) =>
++  act(() => {
++    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, v);
++    el.dispatchEvent(new Event("input", { bubbles: true }));
++  });
++const click = (el: Element) => act(async () => el.dispatchEvent(new MouseEvent("click", { bubbles: true })));
++const byText = (t: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.includes(t))!;
++
++beforeEach(() => {
++  localStorage.clear();
++  getPublic.mockReset().mockResolvedValue({
++    status: "LOBBY",
++    teams: { inter: { name: "Inter", colors }, gremio: { name: "Grêmio", colors } },
++    counts: { inter: 2, gremio: 3 },
++    durationS: 60,
++  });
++  join.mockReset();
++});
++afterEach(() => {
++  unmount();
++  host.remove();
++});
++
++describe("PlayerJoin", () => {
++  it("renders PT-BR name input and team options", async () => {
++    await mount();
++    expect(host.textContent).toContain("Seu nome");
++    expect(host.textContent).toContain("Inter");
++    expect(host.textContent).toContain("Grêmio");
++    expect(host.textContent).toContain("3 jogadores");
++    expect(host.querySelector("input")).toBeTruthy();
++  });
++
++  it("joins with deviceId, stores the session and goes to wait", async () => {
++    join.mockResolvedValue({ playerId: "p1", playerToken: "tok", team: "gremio" });
++    await mount();
++    type(host.querySelector("input")!, "  Ana  ");
++    await click(byText("Grêmio"));
++    await click(byText("Entrar"));
++    expect(join).toHaveBeenCalledWith("m1", { name: "Ana", team: "gremio", deviceId: expect.any(String) });
++    expect(host.querySelector("[data-testid=loc]")!.textContent).toBe("/j/m1/wait");
++    expect(JSON.parse(localStorage.getItem("cb.session.m1")!)).toEqual({ playerId: "p1", playerToken: "tok", team: "gremio" });
++  });
++
++  it("shows the API detail on 409", async () => {
++    join.mockRejectedValue(new ApiError(409, "A partida já começou"));
++    await mount();
++    type(host.querySelector("input")!, "Ana");
++    await click(byText("Inter"));
++    await click(byText("Entrar"));
++    expect(host.querySelector("[role=alert]")!.textContent).toBe("A partida já começou");
++  });
++
++  it("requires a name", async () => {
++    await mount();
++    await click(byText("Inter"));
++    await click(byText("Entrar"));
++    expect(join).not.toHaveBeenCalled();
++    expect(host.querySelector("[role=alert]")!.textContent).toBe("Digite seu nome.");
++  });
++
++  it("skips the form when a session is stored", async () => {
++    localStorage.setItem("cb.session.m1", JSON.stringify({ playerId: "p", playerToken: "t", team: "inter" }));
++    await mount();
++    expect(host.querySelector("[data-testid=loc]")!.textContent).toBe("/j/m1/wait");
++  });
++});
+diff --git a/frontend/src/pages/PlayerJoin.tsx b/frontend/src/pages/PlayerJoin.tsx
+new file mode 100644
+index 0000000..0585bac
+--- /dev/null
++++ b/frontend/src/pages/PlayerJoin.tsx
+@@ -0,0 +1,82 @@
++import { useEffect, useState, type FormEvent } from "react";
++import { useNavigate, useParams } from "react-router-dom";
++import { ApiError } from "../api/client";
++import { getPublic, join } from "../api/playerApi";
++import { Crest } from "../components/Crest";
++import { useDeviceId } from "../hooks/useDeviceId";
++import { loadSession, saveSession } from "../hooks/useMePolling";
++import type { PublicMatch, TeamId } from "../types/api";
++
++const TEAMS: TeamId[] = ["inter", "gremio"];
++
++export default function PlayerJoin() {
++  const { id = "" } = useParams();
++  const navigate = useNavigate();
++  const deviceId = useDeviceId();
++  const [pub, setPub] = useState<PublicMatch | null>(null);
++  const [name, setName] = useState("");
++  const [team, setTeam] = useState<TeamId | null>(null);
++  const [error, setError] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  useEffect(() => {
++    // Existing session: the wait page's /me polling forwards to the right screen (or clears a dead token).
++    if (loadSession(id)) {
++      navigate(`/j/${id}/wait`, { replace: true });
++      return;
++    }
++    getPublic(id)
++      .then(setPub)
++      .catch((e) => setError(e instanceof ApiError ? e.message : "Não foi possível carregar a partida."));
++  }, [id, navigate]);
++
++  const submit = async (e: FormEvent) => {
++    e.preventDefault();
++    const clean = name.trim().slice(0, 24);
++    if (!clean) return setError("Digite seu nome.");
++    if (!team) return setError("Escolha um time.");
++    setBusy(true);
++    setError("");
++    try {
++      const r = await join(id, { name: clean, team, deviceId });
++      saveSession(id, r);
++      navigate(`/j/${id}/wait`);
++    } catch (err) {
++      setError(err instanceof ApiError ? err.message : "Erro inesperado. Tente novamente.");
++      setBusy(false);
++    }
++  };
++
++  return (
++    <main className="player-page">
++      <h1>Entrar na partida</h1>
++      <form onSubmit={submit} className="join-form">
++        <label>
++          Seu nome
++          <input value={name} maxLength={24} onChange={(e) => setName(e.target.value)} autoComplete="nickname" />
++        </label>
++        <div role="radiogroup" aria-label="Escolha seu time" className="team-picks">
++          {TEAMS.map((t) => (
++            <button
++              key={t}
++              type="button"
++              role="radio"
++              aria-checked={team === t}
++              className="team-pick"
++              style={{ borderColor: team === t ? `var(--${t})` : "transparent" }}
++              onClick={() => setTeam(t)}
++            >
++              <Crest team={t} size={64} />
++              <span>{pub?.teams[t].name ?? (t === "inter" ? "Inter" : "Grêmio")}</span>
++              <small>{pub ? `${pub.counts[t]} jogadores` : ""}</small>
++            </button>
++          ))}
++        </div>
++        {error && <p role="alert">{error}</p>}
++        <button type="submit" className="join-submit" disabled={busy}>
++          Entrar
++        </button>
++      </form>
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/PlayerPlay.tsx b/frontend/src/pages/PlayerPlay.tsx
+new file mode 100644
+index 0000000..f235c66
+--- /dev/null
++++ b/frontend/src/pages/PlayerPlay.tsx
+@@ -0,0 +1,25 @@
++import { useParams } from "react-router-dom";
++import { Mascot } from "../components/Mascot";
++import { PullButton } from "../components/PullButton";
++import { useMePolling } from "../hooks/useMePolling";
++import { usePullBuffer } from "../hooks/usePullBuffer";
++
++export default function PlayerPlay() {
++  const { id = "" } = useParams();
++  const { session, me } = useMePolling(id, "play");
++  const { displayCount, tap } = usePullBuffer({
++    matchId: id,
++    playerId: session?.playerId ?? "",
++    playerToken: session?.playerToken ?? "",
++    flushIntervalMs: 500,
++    enabled: me?.screen === "play",
++  });
++  if (!session) return null;
++  return (
++    <main className="player-page play">
++      <Mascot team={session.team} state="straining" size={128} />
++      <p>Puxadas: {displayCount}</p>
++      <PullButton onPull={tap} color={session.team === "inter" ? "var(--inter)" : "var(--gremio)"} />
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/PlayerWait.tsx b/frontend/src/pages/PlayerWait.tsx
+new file mode 100644
+index 0000000..8cc54b3
+--- /dev/null
++++ b/frontend/src/pages/PlayerWait.tsx
+@@ -0,0 +1,14 @@
++import { useParams } from "react-router-dom";
++import { Mascot } from "../components/Mascot";
++import { useMePolling } from "../hooks/useMePolling";
++
++export default function PlayerWait() {
++  const { id = "" } = useParams();
++  const { session } = useMePolling(id, "wait");
++  return (
++    <main className="player-page">
++      {session && <Mascot team={session.team} state="idle" size={160} />}
++      <h1>Aguardando o host iniciar</h1>
++    </main>
++  );
++}
+diff --git a/frontend/src/theme/global.css b/frontend/src/theme/global.css
+index 1ca7ba3..a99bf88 100644
+--- a/frontend/src/theme/global.css
++++ b/frontend/src/theme/global.css
+@@ -52,3 +52,36 @@ img,
+ canvas {
+   image-rendering: pixelated;
+ }
++
++/* ---- Player flow ---- */
++.player-page {
++  min-height: 100%;
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  gap: var(--sp-md);
++  padding: calc(var(--sp-lg) + var(--safe-top)) var(--sp-md) calc(var(--sp-lg) + var(--safe-bottom));
++  text-align: center;
++}
++.player-page.play { justify-content: flex-end; }
++.player-page h1 { font-size: 16px; }
++.join-form { display: flex; flex-direction: column; gap: var(--sp-md); width: 100%; max-width: 420px; }
++.join-form label { display: flex; flex-direction: column; gap: var(--sp-sm); text-align: left; }
++.join-form input { font: inherit; padding: var(--sp-md); background: var(--panel); color: var(--text); border: 2px solid var(--muted); }
++.team-picks { display: flex; gap: var(--sp-md); }
++.team-pick { flex: 1; display: flex; flex-direction: column; align-items: center; gap: var(--sp-sm); padding: var(--sp-md); font: inherit; color: var(--text); background: var(--panel); border: 4px solid transparent; cursor: pointer; }
++.join-submit { font: inherit; padding: var(--sp-md); min-height: 56px; background: var(--text); color: var(--bg); border: 0; cursor: pointer; }
++.pull-button {
++  width: 100%; min-height: 40vh; font: inherit; font-size: 28px; color: #fff; border: 0;
++  touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
++}
++.pull-button:active { transform: scale(0.97); }
++.plus-one {
++  position: absolute; left: 50%; top: 0; pointer-events: none; font-size: 24px;
++  animation: plus-one 0.6s ease-out forwards;
++}
++@keyframes plus-one {
++  from { opacity: 1; transform: translate(-50%, 0); }
++  to { opacity: 0; transform: translate(-50%, -80px); }
++}

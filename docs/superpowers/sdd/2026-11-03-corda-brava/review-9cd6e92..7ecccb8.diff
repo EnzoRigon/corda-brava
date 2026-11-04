@@ -1,0 +1,138 @@
+diff --git a/frontend/src/components/PullButton.test.tsx b/frontend/src/components/PullButton.test.tsx
+new file mode 100644
+index 0000000..3a64261
+--- /dev/null
++++ b/frontend/src/components/PullButton.test.tsx
+@@ -0,0 +1,35 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { describe, expect, it, vi } from "vitest";
++import { PullButton } from "./PullButton";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++function setup() {
++  const onPull = vi.fn();
++  const host = document.createElement("div");
++  const root = createRoot(host);
++  act(() => root.render(createElement(PullButton, { onPull, color: "red" })));
++  const btn = host.querySelector("button")!;
++  const fire = (type: string, init: MouseEventInit) => act(() => void btn.dispatchEvent(new MouseEvent(type, { bubbles: true, ...init })));
++  return { onPull, fire };
++}
++
++describe("PullButton", () => {
++  it("counts a pointerdown and its following click once", () => {
++    const { onPull, fire } = setup();
++    fire("pointerdown", { button: 0 });
++    fire("click", { detail: 1 });
++    expect(onPull).toHaveBeenCalledTimes(1);
++  });
++  it("counts keyboard activation (click detail 0) once", () => {
++    const { onPull, fire } = setup();
++    fire("click", { detail: 0 });
++    expect(onPull).toHaveBeenCalledTimes(1);
++  });
++  it("ignores non-primary buttons", () => {
++    const { onPull, fire } = setup();
++    fire("pointerdown", { button: 2 });
++    expect(onPull).not.toHaveBeenCalled();
++  });
++});
+diff --git a/frontend/src/components/PullButton.tsx b/frontend/src/components/PullButton.tsx
+index adcc0b3..0717f0c 100644
+--- a/frontend/src/components/PullButton.tsx
++++ b/frontend/src/components/PullButton.tsx
+@@ -1,11 +1,12 @@
+-import { useState } from "react";
++import { useRef, useState } from "react";
+ 
+ /** Big PUXAR button. Fires on pointerdown (no 300ms click delay); click only handles keyboard (detail === 0). */
+ export function PullButton({ onPull, color }: { onPull: () => void; color: string }) {
+   const [pops, setPops] = useState<number[]>([]);
++  const seq = useRef(0);
+   const fire = () => {
+     onPull();
+-    const n = performance.now();
++    const n = ++seq.current;
+     setPops((p) => [...p.slice(-5), n]);
+   };
+   return (
+@@ -19,7 +20,9 @@ export function PullButton({ onPull, color }: { onPull: () => void; color: strin
+         type="button"
+         className="pull-button"
+         style={{ background: color }}
++        onContextMenu={(e) => e.preventDefault()}
+         onPointerDown={(e) => {
++          if (e.button !== 0) return;
+           e.preventDefault();
+           fire();
+         }}
+diff --git a/frontend/src/hooks/useMePolling.test.ts b/frontend/src/hooks/useMePolling.test.ts
+index bd090a5..0019b89 100644
+--- a/frontend/src/hooks/useMePolling.test.ts
++++ b/frontend/src/hooks/useMePolling.test.ts
+@@ -72,4 +72,29 @@ describe("useMePolling", () => {
+     expect(getMe.mock.calls.length).toBe(n);
+     unmount = () => {};
+   });
++
++  it("does not start a second request while one is pending", async () => {
++    let release!: (v: Awaited<ReturnType<typeof api.getMe>>) => void;
++    getMe.mockReset().mockReturnValue(new Promise((r) => (release = r)));
++    await tick(3000);
++    expect(getMe.mock.calls.length).toBe(1);
++    release({ screen: "wait", team: "inter", matchStatus: "LOBBY" });
++    await tick();
++    expect(getMe.mock.calls.length).toBe(2);
++  });
++
++  it("stops polling once the screen is end", async () => {
++    getMe.mockResolvedValue({ screen: "end", team: "inter", matchStatus: "FINISHED", result: "DRAW" });
++    await tick();
++    const n = getMe.mock.calls.length;
++    await tick(5000);
++    expect(loc).toBe("/j/m1/end");
++    expect(getMe.mock.calls.length).toBe(n);
++  });
++
++  it("treats 404 like 401", async () => {
++    getMe.mockRejectedValue(new ApiError(404, "x"));
++    await tick();
++    expect(loc).toBe("/j/m1");
++  });
+ });
+diff --git a/frontend/src/hooks/useMePolling.ts b/frontend/src/hooks/useMePolling.ts
+index b1c854c..49d6c58 100644
+--- a/frontend/src/hooks/useMePolling.ts
++++ b/frontend/src/hooks/useMePolling.ts
+@@ -43,21 +43,27 @@ export function useMePolling(matchId: string, page: Screen) {
+       return;
+     }
+     let alive = true;
++    let busy = false; // in-flight guard: no overlapping /me requests, no stale out-of-order screens
+     const poll = async () => {
++      if (busy) return;
++      busy = true;
+       try {
+         const r = await getMe(matchId, session.playerId, session.playerToken);
+         if (!alive) return;
+         setMe(r);
++        if (r.screen === "end") clearInterval(id); // terminal: nothing more to learn
+         if (r.screen !== page) navigate(`/j/${matchId}/${r.screen}`, { replace: true });
+       } catch (e) {
+-        if (alive && e instanceof ApiError && (e.status === 401 || e.status === 403)) {
++        if (alive && e instanceof ApiError && [401, 403, 404].includes(e.status)) {
+           clearSession(matchId);
+           navigate(`/j/${matchId}`, { replace: true });
+         } // other errors: keep polling
++      } finally {
++        busy = false;
+       }
+     };
+-    void poll();
+     const id = setInterval(() => void poll(), ME_POLL_MS);
++    void poll();
+     return () => {
+       alive = false;
+       clearInterval(id);
