@@ -204,3 +204,11 @@ Plan: docs/superpowers/plans/2026-11-04-corda-brava-polish.md (P1–P7). P1 (ass
 
 P2: implemented (commit 1f386fb; report d368556; backend 146 pass, ruff/black clean; frontend tsc + vitest 49). WS tick gains events: [{playerId, name, team(lowercase), count}] for applied batches only, last 20 per tick; names from the roster the consumer already loads. TickEvent type in frontend/src/types/api.ts. Controller reviewed the 12-line diff directly (small, test-covered) — approved.
 P2: complete (commits 2ad2a3a..1f386fb).
+
+## FINAL WHOLE-PROJECT REVIEW (opus) @ f6a899b — verdict: Ship with fixes
+Live-probed OK: normalized scoring, batchId dedup, clamp, late-join 409, wrong token 403, host 401, WS 1008, rejoin keeps team, snapshot keys == MatchView type. Suites 146 / 49 green.
+Critical: usePullBuffer crypto.randomUUID undefined on http://<LAN-IP> (non-secure context) -> no pulls ever reach the server from phones.
+Important: (1) backend restart mid-match leaves RUNNING matches without a consumer loop (timer stuck 0:00, queue grows); (2) nginx $proxy_add_x_forwarded_for + uvicorn forwarded-allow-ips=* lets clients spoof XFF and bypass the login rate limit.
+Minors: anti-cheat (MAX_PULLS_PER_BATCH 200 > ROPE_TARGET 100; no per-player rate cap; join flood skews normalized scoring), broadcast without per-listener timeout, English ConflictError texts, cancel on FINISHED returns 200, cancelled match shown as draw/blank, CORS wildcard+credentials (not exploitable), tokens in URLs/access logs, HostMatch never passes mascots, no empty-team warning, no lobby duration edit, no particles/sound (covered by polish), /docs not proxied, pixel-art-studio corda-brava build scripts vs CLAUDE.md wording, README test count stale.
+Fix round dispatched (sonnet): Critical + both Important + anti-cheat cap + broadcast timeout + PT-BR + cancel 409 + cancelled text + docs. Cancel button on HostMatch and mascots-in-match deferred to polish P6 (HostMatch being reworked).
+Concurrent: rope-alignment fix (owner bug report: mascot rope misaligned with rope line; sprites 384x448, rope band y 280–303 at sprite edge) dispatched separately.
