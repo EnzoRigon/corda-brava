@@ -1,0 +1,585 @@
+diff --git a/frontend/package.json b/frontend/package.json
+index df66732..8049b0a 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -11,6 +11,7 @@
+     "lint": "eslint src"
+   },
+   "dependencies": {
++    "qrcode.react": "^4.2.0",
+     "react": "^18.3.1",
+     "react-dom": "^18.3.1",
+     "react-router-dom": "^6.30.6"
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index de34e92..3648c2f 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,3 +1,6 @@
++import HostCreate from "./pages/HostCreate";
++import HostLobby from "./pages/HostLobby";
++import HostLogin from "./pages/HostLogin";
+ import PlayerEnd from "./pages/PlayerEnd";
+ import PlayerJoin from "./pages/PlayerJoin";
+ import PlayerPlay from "./pages/PlayerPlay";
+@@ -19,9 +22,9 @@ export default function App() {
+   return (
+     <Routes>
+       <Route path="/" element={<Navigate to="/host/login" replace />} />
+-      <Route path="/host/login" element={<Placeholder title="Entrar como host" />} />
+-      <Route path="/host/create" element={<Placeholder title="Nova partida" />} />
+-      <Route path="/host/lobby/:id" element={<Placeholder title="Sala de espera" hasId />} />
++      <Route path="/host/login" element={<HostLogin />} />
++      <Route path="/host/create" element={<HostCreate />} />
++      <Route path="/host/lobby/:id" element={<HostLobby />} />
+       <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
+       <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
+       <Route path="/j/:id" element={<PlayerJoin />} />
+diff --git a/frontend/src/components/PlayerIcon.tsx b/frontend/src/components/PlayerIcon.tsx
+new file mode 100644
+index 0000000..5dd0bf2
+--- /dev/null
++++ b/frontend/src/components/PlayerIcon.tsx
+@@ -0,0 +1,11 @@
++import type { TeamId } from "../types/api";
++
++/** Generic pixel-style badge with the player's initial; pops in on mount. */
++export default function PlayerIcon({ name, team }: { name: string; team: TeamId }) {
++  return (
++    <div className={`player-icon ${team}`} title={name}>
++      <span className="player-icon-block">{name.trim().charAt(0).toUpperCase() || "?"}</span>
++      <span className="player-icon-name">{name}</span>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/QRCode.tsx b/frontend/src/components/QRCode.tsx
+new file mode 100644
+index 0000000..cb52d49
+--- /dev/null
++++ b/frontend/src/components/QRCode.tsx
+@@ -0,0 +1,27 @@
++import { useEffect, useState } from "react";
++import { QRCodeSVG } from "qrcode.react";
++
++/** Clickable QR; click opens a fullscreen overlay with a large QR + the URL. Escape or click closes. */
++export default function QRCode({ url }: { url: string }) {
++  const [open, setOpen] = useState(false);
++  useEffect(() => {
++    if (!open) return;
++    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
++    window.addEventListener("keydown", onKey);
++    return () => window.removeEventListener("keydown", onKey);
++  }, [open]);
++  return (
++    <>
++      <button className="qr-btn" onClick={() => setOpen(true)} aria-label="Ampliar QR code">
++        <QRCodeSVG value={url} size={240} marginSize={2} />
++      </button>
++      {open && (
++        <div className="qr-overlay" role="dialog" aria-label="QR code da partida" onClick={() => setOpen(false)}>
++          <QRCodeSVG value={url} size={Math.min(window.innerWidth, window.innerHeight) * 0.7} marginSize={2} />
++          <p>{url}</p>
++          <small>Clique ou pressione Esc para fechar</small>
++        </div>
++      )}
++    </>
++  );
++}
+diff --git a/frontend/src/components/TeamColumn.tsx b/frontend/src/components/TeamColumn.tsx
+new file mode 100644
+index 0000000..d4cfba2
+--- /dev/null
++++ b/frontend/src/components/TeamColumn.tsx
+@@ -0,0 +1,18 @@
++import type { RosterPlayer, TeamId } from "../types/api";
++import { Crest } from "./Crest";
++import PlayerIcon from "./PlayerIcon";
++
++const NAMES: Record<TeamId, string> = { inter: "Inter", gremio: "Grêmio" };
++
++export default function TeamColumn({ team, players }: { team: TeamId; players: RosterPlayer[] }) {
++  return (
++    <section className={`team-column ${team}`}>
++      <Crest team={team} size={96} />
++      <h2>{NAMES[team]}</h2>
++      <p className="team-count">{players.length} {players.length === 1 ? "jogador" : "jogadores"}</p>
++      <div className="team-roster">
++        {players.map((p) => <PlayerIcon key={p.id} name={p.name} team={team} />)}
++      </div>
++    </section>
++  );
++}
+diff --git a/frontend/src/hooks/useHostSocket.test.ts b/frontend/src/hooks/useHostSocket.test.ts
+new file mode 100644
+index 0000000..1b17b49
+--- /dev/null
++++ b/frontend/src/hooks/useHostSocket.test.ts
+@@ -0,0 +1,101 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { useHostSocket } from "./useHostSocket";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++class MockWS {
++  static all: MockWS[] = [];
++  onopen: (() => void) | null = null;
++  onmessage: ((e: { data: string }) => void) | null = null;
++  onclose: ((e: { code: number }) => void) | null = null;
++  onerror: (() => void) | null = null;
++  closed = false;
++  constructor(public url: string) {
++    MockWS.all.push(this);
++  }
++  close() {
++    this.closed = true;
++  }
++  send(msg: unknown) {
++    void msg;
++  }
++}
++const cfg = { durationS: 60, ropeTarget: 100, balanceMode: "normalized", teams: {} };
++const match = {
++  id: "m1", status: "LOBBY", config: cfg, roster: { inter: [], gremio: [] },
++  rope: 0, remainingS: 60, scores: { inter: { pulls: 0 }, gremio: { pulls: 0 } }, result: null, endReason: null,
++};
++const last = () => MockWS.all[MockWS.all.length - 1];
++const msg = (m: unknown) => act(() => last().onmessage!({ data: JSON.stringify(m) }));
++const close = (code = 1006) => act(() => last().onclose!({ code }));
++
++let out: ReturnType<typeof useHostSocket>;
++let unmount: () => void;
++function Probe() {
++  out = useHostSocket("m1", "tok");
++  return null;
++}
++beforeEach(() => {
++  vi.useFakeTimers();
++  MockWS.all = [];
++  (globalThis as unknown as { WebSocket: unknown }).WebSocket = MockWS;
++  const root = createRoot(document.createElement("div"));
++  act(() => root.render(createElement(Probe)));
++  unmount = () => act(() => root.unmount());
++  act(() => last().onopen!());
++});
++afterEach(() => {
++  unmount();
++  vi.useRealTimers();
++});
++
++describe("useHostSocket", () => {
++  it("connects with token and exposes the snapshot", () => {
++    expect(last().url).toContain("/api/host/matches/m1/ws?token=tok");
++    expect(out.connected).toBe(true);
++    msg({ type: "snapshot", match });
++    expect(out.snapshot?.id).toBe("m1");
++    expect(out.status).toBe("LOBBY");
++  });
++  it("dedupes player_joined by id", () => {
++    msg({ type: "snapshot", match });
++    const p = { type: "player_joined", team: "inter", player: { id: "p1", name: "A" } };
++    msg(p);
++    msg(p);
++    expect(out.snapshot?.roster.inter).toHaveLength(1);
++  });
++  it("tick updates rope and scores", () => {
++    msg({ type: "snapshot", match });
++    msg({ type: "tick", rope: -5, remainingS: 50, delta: { inter: 1, gremio: 0 }, scores: { inter: { pulls: 3 }, gremio: { pulls: 1 } } });
++    expect(out.snapshot?.rope).toBe(-5);
++    expect(out.snapshot?.scores.inter.pulls).toBe(3);
++    expect(out.lastTick?.remainingS).toBe(50);
++  });
++  it("reconnects with backoff on unexpected close", () => {
++    close();
++    expect(out.connected).toBe(false);
++    expect(MockWS.all).toHaveLength(1);
++    act(() => void vi.advanceTimersByTime(1000));
++    expect(MockWS.all).toHaveLength(2);
++  });
++  it("1008 reports auth error and does not reconnect", () => {
++    close(1008);
++    act(() => void vi.advanceTimersByTime(10000));
++    expect(out.authError).toBe(true);
++    expect(MockWS.all).toHaveLength(1);
++  });
++  it.each([
++    [{ type: "ended", result: "DRAW", endReason: "timeout", finalRope: 0, analytics: { totalPlayers: 0 } }],
++    [{ type: "cancelled" }],
++    [{ type: "reset", newMatchId: "m2" }],
++  ])("%j is terminal: no reconnect", (m) => {
++    msg(m);
++    close();
++    act(() => void vi.advanceTimersByTime(10000));
++    expect(MockWS.all).toHaveLength(1);
++    if (m.type === "ended") expect(out.ended?.result).toBe("DRAW");
++    else expect(out.terminal?.type).toBe(m.type);
++  });
++});
+diff --git a/frontend/src/hooks/useHostSocket.ts b/frontend/src/hooks/useHostSocket.ts
+new file mode 100644
+index 0000000..3dc619e
+--- /dev/null
++++ b/frontend/src/hooks/useHostSocket.ts
+@@ -0,0 +1,91 @@
++import { useEffect, useState } from "react";
++import { hostWsUrl } from "../api/hostApi";
++import type { CancelledMsg, EndedMsg, HostWsMsg, MatchView, ResetMsg, TickMsg } from "../types/api";
++
++export interface HostSocketState {
++  status: MatchView["status"] | null;
++  snapshot: MatchView | null;
++  lastTick: TickMsg | null;
++  ended: EndedMsg | null;
++  /** cancelled / reset (with newMatchId): the server closes right after. */
++  terminal: CancelledMsg | ResetMsg | null;
++  connected: boolean;
++  /** Server closed with 1008 (bad/expired token): the page should go to login. */
++  authError: boolean;
++}
++
++const INITIAL: HostSocketState = {
++  status: null, snapshot: null, lastTick: null, ended: null, terminal: null, connected: false, authError: false,
++};
++const MAX_BACKOFF_MS = 5000;
++
++function apply(s: HostSocketState, m: HostWsMsg): HostSocketState {
++  const snap = s.snapshot;
++  switch (m.type) {
++    case "snapshot":
++      return { ...s, snapshot: m.match, status: m.match.status };
++    case "player_joined": {
++      if (!snap || snap.roster[m.team].some((p) => p.id === m.player.id)) return s;
++      const roster = { ...snap.roster, [m.team]: [...snap.roster[m.team], m.player] };
++      return { ...s, snapshot: { ...snap, roster } };
++    }
++    case "tick":
++      return {
++        ...s,
++        lastTick: m,
++        status: "RUNNING",
++        snapshot: snap && { ...snap, status: "RUNNING", rope: m.rope, remainingS: m.remainingS, scores: m.scores },
++      };
++    case "ended":
++      return {
++        ...s,
++        ended: m,
++        status: "FINISHED",
++        snapshot: snap && { ...snap, status: "FINISHED", rope: m.finalRope, result: m.result, endReason: m.endReason },
++      };
++    default:
++      return { ...s, terminal: m };
++  }
++}
++
++export function useHostSocket(matchId: string, token: string): HostSocketState {
++  const [state, setState] = useState<HostSocketState>(INITIAL);
++
++  useEffect(() => {
++    let ws: WebSocket | null = null;
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    let attempt = 0;
++    let stopped = false; // unmounted, or ended/cancelled/reset/auth failure: never reconnect
++
++    const connect = () => {
++      ws = new WebSocket(hostWsUrl(matchId, token));
++      ws.onopen = () => {
++        attempt = 0;
++        setState((s) => ({ ...s, connected: true }));
++      };
++      ws.onmessage = (e) => {
++        const m = JSON.parse(e.data as string) as HostWsMsg;
++        if (m.type === "ended" || m.type === "cancelled" || m.type === "reset") stopped = true;
++        setState((s) => apply(s, m));
++      };
++      ws.onclose = (e) => {
++        setState((s) => ({ ...s, connected: false, authError: s.authError || e.code === 1008 }));
++        if (e.code === 1008) stopped = true;
++        if (stopped) return;
++        timer = setTimeout(connect, Math.min(500 * 2 ** attempt++, MAX_BACKOFF_MS));
++      };
++    };
++    connect();
++
++    return () => {
++      stopped = true;
++      clearTimeout(timer);
++      if (ws) {
++        ws.onclose = null;
++        ws.close();
++      }
++    };
++  }, [matchId, token]);
++
++  return state;
++}
+diff --git a/frontend/src/pages/HostCreate.tsx b/frontend/src/pages/HostCreate.tsx
+new file mode 100644
+index 0000000..05ffd41
+--- /dev/null
++++ b/frontend/src/pages/HostCreate.tsx
+@@ -0,0 +1,56 @@
++import { useState, type FormEvent } from "react";
++import { Navigate, useNavigate } from "react-router-dom";
++import { createMatch } from "../api/hostApi";
++import { ApiError } from "../api/client";
++import type { BalanceMode } from "../types/api";
++import { getHostToken } from "./HostLogin";
++
++// Mirrors backend MATCH_DURATION_MIN_S / MAX_S defaults.
++const MIN_S = 30;
++const MAX_S = 600;
++
++export default function HostCreate() {
++  const nav = useNavigate();
++  const token = getHostToken();
++  const [durationS, setDuration] = useState(120);
++  const [balance, setBalance] = useState<BalanceMode>("normalized");
++  const [err, setErr] = useState("");
++  const [busy, setBusy] = useState(false);
++  if (!token) return <Navigate to="/host/login" replace />;
++
++  async function submit(e: FormEvent) {
++    e.preventDefault();
++    setBusy(true);
++    setErr("");
++    try {
++      const r = await createMatch(token!, { durationS, balanceMode: balance });
++      nav(`/host/lobby/${r.matchId}`, { state: { joinUrl: r.joinUrl } });
++    } catch (x) {
++      if (x instanceof ApiError && x.status === 401) return void nav("/host/login", { replace: true });
++      setErr(x instanceof ApiError ? x.message : "Erro inesperado. Tente novamente.");
++      setBusy(false);
++    }
++  }
++
++  return (
++    <main className="host-page">
++      <h1>Nova partida</h1>
++      <form className="join-form" onSubmit={submit}>
++        <label>
++          Duração (segundos)
++          <input type="number" min={MIN_S} max={MAX_S} value={durationS} onChange={(e) => setDuration(Number(e.target.value))} />
++        </label>
++        <label>
++          Pontuação
++          <select value={balance} onChange={(e) => setBalance(e.target.value as BalanceMode)}>
++            <option value="normalized">Normalizada (equilibra times)</option>
++            <option value="raw">Bruta (cada puxada vale 1)</option>
++          </select>
++        </label>
++        {err && <p role="alert">{err}</p>}
++        <button className="join-submit" disabled={busy || durationS < MIN_S || durationS > MAX_S}>Criar partida</button>
++        <small>Entre {MIN_S} e {MAX_S} segundos.</small>
++      </form>
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/HostLobby.tsx b/frontend/src/pages/HostLobby.tsx
+new file mode 100644
+index 0000000..d939ef3
+--- /dev/null
++++ b/frontend/src/pages/HostLobby.tsx
+@@ -0,0 +1,52 @@
++import { useState } from "react";
++import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
++import { startMatch } from "../api/hostApi";
++import { ApiError, PUBLIC_BASE } from "../api/client";
++import { useHostSocket } from "../hooks/useHostSocket";
++import QRCode from "../components/QRCode";
++import TeamColumn from "../components/TeamColumn";
++import { getHostToken } from "./HostLogin";
++
++export default function HostLobby() {
++  const { id = "" } = useParams();
++  const token = getHostToken() ?? "";
++  const nav = useNavigate();
++  // joinUrl comes from the backend create response (server PUBLIC_BASE_URL); GET has none, so a reload derives it from VITE_PUBLIC_BASE.
++  const joinUrl = (useLocation().state as { joinUrl?: string } | null)?.joinUrl ?? `${PUBLIC_BASE}/j/${id}`;
++  const { snapshot, status, terminal, authError } = useHostSocket(id, token);
++  const [err, setErr] = useState("");
++
++  if (!token || authError) return <Navigate to="/host/login" replace />;
++  if (status === "RUNNING") return <Navigate to={`/host/match/${id}`} replace />;
++  if (status === "FINISHED") return <Navigate to={`/host/results/${id}`} replace />;
++  if (terminal) return <Navigate to="/host/create" replace />;
++
++  const roster = snapshot?.roster ?? { inter: [], gremio: [] };
++  const total = roster.inter.length + roster.gremio.length;
++
++  async function start() {
++    try {
++      await startMatch(token, id);
++      nav(`/host/match/${id}`);
++    } catch (x) {
++      if (x instanceof ApiError && x.status === 401) return void nav("/host/login", { replace: true });
++      setErr(x instanceof ApiError ? x.message : "Erro inesperado. Tente novamente.");
++    }
++  }
++
++  return (
++    <main className="host-page lobby">
++      <h1>Escaneie para entrar</h1>
++      <QRCode url={joinUrl} />
++      <p className="join-url">{joinUrl}</p>
++      <div className="lobby-teams">
++        <TeamColumn team="inter" players={roster.inter} />
++        <TeamColumn team="gremio" players={roster.gremio} />
++      </div>
++      {err && <p role="alert">{err}</p>}
++      <button className="join-submit start-btn" onClick={start} disabled={!snapshot || total === 0}>
++        Iniciar partida
++      </button>
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/HostLogin.test.tsx b/frontend/src/pages/HostLogin.test.tsx
+new file mode 100644
+index 0000000..f2bda07
+--- /dev/null
++++ b/frontend/src/pages/HostLogin.test.tsx
+@@ -0,0 +1,62 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { ApiError } from "../api/client";
++import * as api from "../api/hostApi";
++import HostLogin, { HOST_TOKEN_KEY } from "./HostLogin";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++const login = vi.spyOn(api, "login");
++const Where = () => createElement("div", { "data-testid": "loc" }, useLocation().pathname);
++let host: HTMLDivElement;
++
++async function mount() {
++  host = document.createElement("div");
++  document.body.append(host);
++  await act(async () =>
++    createRoot(host).render(
++      createElement(
++        MemoryRouter,
++        { initialEntries: ["/host/login"] },
++        createElement(
++          Routes,
++          null,
++          createElement(Route, { path: "/host/login", element: createElement(HostLogin) }),
++          createElement(Route, { path: "*", element: createElement(Where) }),
++        ),
++      ),
++    ),
++  );
++}
++async function submit(pw: string) {
++  const input = host.querySelector("input")!;
++  act(() => {
++    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, pw);
++    input.dispatchEvent(new Event("input", { bubbles: true }));
++  });
++  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
++}
++beforeEach(() => {
++  document.body.innerHTML = "";
++  sessionStorage.clear();
++  login.mockReset();
++});
++
++describe("HostLogin", () => {
++  it("stores token and navigates to create", async () => {
++    login.mockResolvedValue({ token: "T", expiresAt: "x" });
++    await mount();
++    await submit("pw");
++    expect(login).toHaveBeenCalledWith("pw");
++    expect(sessionStorage.getItem(HOST_TOKEN_KEY)).toBe("T");
++    expect(host.textContent).toBe("/host/create");
++  });
++  it("shows API detail on 401", async () => {
++    login.mockRejectedValue(new ApiError(401, "Senha incorreta"));
++    await mount();
++    await submit("bad");
++    expect(host.textContent).toContain("Senha incorreta");
++    expect(sessionStorage.getItem(HOST_TOKEN_KEY)).toBeNull();
++  });
++});
+diff --git a/frontend/src/pages/HostLogin.tsx b/frontend/src/pages/HostLogin.tsx
+new file mode 100644
+index 0000000..a3e30de
+--- /dev/null
++++ b/frontend/src/pages/HostLogin.tsx
+@@ -0,0 +1,52 @@
++import { useState, type FormEvent } from "react";
++import { useNavigate } from "react-router-dom";
++import { login } from "../api/hostApi";
++import { ApiError } from "../api/client";
++
++export const HOST_TOKEN_KEY = "cb.hostToken";
++export const getHostToken = (): string | null => {
++  try {
++    return sessionStorage.getItem(HOST_TOKEN_KEY);
++  } catch {
++    return null;
++  }
++};
++
++export default function HostLogin() {
++  const nav = useNavigate();
++  const [pw, setPw] = useState("");
++  const [err, setErr] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  async function submit(e: FormEvent) {
++    e.preventDefault();
++    setBusy(true);
++    setErr("");
++    try {
++      const { token } = await login(pw);
++      try {
++        sessionStorage.setItem(HOST_TOKEN_KEY, token);
++      } catch {
++        // storage unavailable: pages will bounce back to login
++      }
++      nav("/host/create");
++    } catch (x) {
++      setErr(x instanceof ApiError ? x.message : "Erro inesperado. Tente novamente.");
++      setBusy(false);
++    }
++  }
++
++  return (
++    <main className="host-page">
++      <h1>Corda Brava</h1>
++      <form className="join-form" onSubmit={submit}>
++        <label>
++          Senha do host
++          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoFocus />
++        </label>
++        {err && <p role="alert">{err}</p>}
++        <button className="join-submit" disabled={busy || !pw}>Entrar</button>
++      </form>
++    </main>
++  );
++}
+diff --git a/frontend/src/theme/global.css b/frontend/src/theme/global.css
+index a99bf88..6a6260b 100644
+--- a/frontend/src/theme/global.css
++++ b/frontend/src/theme/global.css
+@@ -85,3 +85,20 @@ canvas {
+   from { opacity: 1; transform: translate(-50%, 0); }
+   to { opacity: 0; transform: translate(-50%, -80px); }
+ }
++
++/* ---- Host pages (big screen) ---- */
++.host-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; gap: var(--sp-lg); padding: var(--sp-xl); text-align: center; }
++.host-page h1 { font-size: 32px; }
++.host-page select { font: inherit; padding: var(--sp-md); background: var(--panel); color: var(--text); border: 2px solid var(--muted); }
++.qr-btn { padding: var(--sp-md); background: #fff; border: 0; cursor: zoom-in; line-height: 0; }
++.qr-overlay { position: fixed; inset: 0; z-index: var(--z-overlay); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-lg); background: #fff; color: #000; cursor: zoom-out; }
++.join-url { font-size: 14px; color: var(--muted); word-break: break-all; }
++.lobby-teams { display: flex; gap: var(--sp-xl); width: 100%; justify-content: center; align-items: flex-start; }
++.team-column { flex: 1; max-width: 560px; padding: var(--sp-lg); background: var(--panel); border-top: 8px solid var(--inter); display: flex; flex-direction: column; align-items: center; gap: var(--sp-md); }
++.team-column.gremio { border-top-color: var(--gremio); }
++.team-roster { display: flex; flex-wrap: wrap; gap: var(--sp-md); justify-content: center; }
++.player-icon { display: flex; flex-direction: column; align-items: center; gap: var(--sp-xs); font-size: 12px; animation: player-pop 0.5s steps(5) both; }
++.player-icon-block { width: 48px; height: 48px; display: grid; place-items: center; background: var(--inter); color: #fff; box-shadow: 4px 4px 0 #0006; }
++.player-icon.gremio .player-icon-block { background: var(--gremio); }
++.start-btn { padding-inline: var(--sp-xl); font-size: 20px; }
++@keyframes player-pop { from { transform: scale(0) translateY(-40px); opacity: 0; } to { transform: none; opacity: 1; } }

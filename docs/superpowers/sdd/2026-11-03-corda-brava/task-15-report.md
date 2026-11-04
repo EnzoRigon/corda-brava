@@ -34,3 +34,8 @@ vitest 8 files / 41 tests pass; tsc clean; lint clean; build OK.
 - Duration bounds 30-600 hardcoded in HostCreate (mirror backend defaults).
 - Lobby routes to /host/create on cancelled/reset (reset's newMatchId not followed; Task 16 may handle).
 - Tests for the hook written in the same pass, not watched failing first. Not verified in a real browser.
+
+## Fix round 1 (commit 1a152d4)
+- Backend: `MatchView.joinUrl` (optional) set in `match_view()` via shared `_join_url()` (same as create), so GET and WS snapshot carry it; test added. `create_app(settings=None)` falls back to `get_settings()` (README uvicorn --factory command works).
+- Frontend: lobby joinUrl = snapshot.joinUrl > router state > VITE_PUBLIC_BASE fallback (supersedes the QR/joinUrl note above). Socket cleanup nulls onmessage/onopen; JSON.parse guarded. QR overlay: aria-modal, tabIndex -1, focused on open, focus returns to QR button. `reset` navigates to /host/lobby/<newMatchId>; cancelled still goes to /host/create. New HostLobby test.
+- Checks: backend pytest 144 pass, ruff and black clean; frontend vitest 9 files / 42 tests, tsc, build, lint clean.
