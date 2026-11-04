@@ -1,0 +1,493 @@
+diff --git a/frontend/package.json b/frontend/package.json
+index 8049b0a..db5809d 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -14,7 +14,8 @@
+     "qrcode.react": "^4.2.0",
+     "react": "^18.3.1",
+     "react-dom": "^18.3.1",
+-    "react-router-dom": "^6.30.6"
++    "react-router-dom": "^6.30.6",
++    "recharts": "^3.10.1"
+   },
+   "devDependencies": {
+     "@eslint/js": "^10.0.1",
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 3648c2f..60edc7f 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,22 +1,13 @@
+ import HostCreate from "./pages/HostCreate";
+ import HostLobby from "./pages/HostLobby";
+ import HostLogin from "./pages/HostLogin";
++import HostMatch from "./pages/HostMatch";
++import HostResults from "./pages/HostResults";
+ import PlayerEnd from "./pages/PlayerEnd";
+ import PlayerJoin from "./pages/PlayerJoin";
+ import PlayerPlay from "./pages/PlayerPlay";
+ import PlayerWait from "./pages/PlayerWait";
+-import { Navigate, Route, Routes, useParams } from "react-router-dom";
+-
+-// Placeholder pages; Tasks 12-16 replace each with the real screen.
+-function Placeholder({ title, hasId = false }: { title: string; hasId?: boolean }) {
+-  const { id } = useParams();
+-  return (
+-    <main style={{ padding: "var(--sp-lg)" }}>
+-      <h1>{title}</h1>
+-      {hasId && <p>Partida: {id}</p>}
+-    </main>
+-  );
+-}
++import { Navigate, Route, Routes } from "react-router-dom";
+ 
+ export default function App() {
+   return (
+@@ -25,8 +16,8 @@ export default function App() {
+       <Route path="/host/login" element={<HostLogin />} />
+       <Route path="/host/create" element={<HostCreate />} />
+       <Route path="/host/lobby/:id" element={<HostLobby />} />
+-      <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
+-      <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
++      <Route path="/host/match/:id" element={<HostMatch />} />
++      <Route path="/host/results/:id" element={<HostResults />} />
+       <Route path="/j/:id" element={<PlayerJoin />} />
+       <Route path="/j/:id/wait" element={<PlayerWait />} />
+       <Route path="/j/:id/play" element={<PlayerPlay />} />
+diff --git a/frontend/src/components/AnalyticsGrid.tsx b/frontend/src/components/AnalyticsGrid.tsx
+new file mode 100644
+index 0000000..e6b2185
+--- /dev/null
++++ b/frontend/src/components/AnalyticsGrid.tsx
+@@ -0,0 +1,46 @@
++import type { AnalyticsPayload, PlayerStats, TeamId } from "../types/api";
++import { Crest } from "./Crest";
++import PullsTimeline from "./charts/PullsTimeline";
++
++const NAME: Record<TeamId, string> = { inter: "Inter", gremio: "Grêmio" };
++const TEAMS: TeamId[] = ["inter", "gremio"];
++const Tile = ({ label, value }: { label: string; value: string | number }) => (
++  <div className="tile"><span>{label}</span><strong>{value}</strong></div>
++);
++const who = (p: PlayerStats | null) => (p ? `${p.name} (${p.pulls})` : "—");
++
++export default function AnalyticsGrid({ a }: { a: AnalyticsPayload }) {
++  return (
++    <section className="analytics">
++      <div className="tiles">
++        <Tile label="Jogadores" value={a.totalPlayers} />
++        <Tile label="Puxadas totais" value={a.totalPulls.overall} />
++        <Tile label="Duração (s)" value={a.durationS} />
++        <Tile label="Pico de intensidade" value={`${a.peak.value}/s aos ${a.peak.t}s`} />
++        <Tile label="Posição final da corda" value={a.finalRope} />
++      </div>
++      <div className="team-tiles">
++        {TEAMS.map((t) => (
++          <div key={t} className={`team-card ${t}`}>
++            <h3><Crest team={t} size={32} /> {NAME[t]}</h3>
++            <Tile label="Jogadores" value={a.playersPerTeam[t]} />
++            <Tile label="Puxadas" value={a.totalPulls[t]} />
++            <Tile label="Média por jogador" value={a.teams[t].avgPullsPerPlayer.toFixed(1)} />
++            <Tile label="Melhor jogador" value={who(a.teams[t].bestPlayer)} />
++            <Tile label="Pior jogador" value={who(a.teams[t].worstPlayer)} />
++          </div>
++        ))}
++      </div>
++      <h2>Puxadas por segundo</h2>
++      <PullsTimeline data={a.pullsPerSecond} />
++      <h2>Ranking</h2>
++      <ol className="leaderboard">
++        {a.leaderboard.map((p) => (
++          <li key={p.playerId} className={p.team}>
++            {p.name} — {p.pulls} puxadas ({p.pctOfTeam}% do time)
++          </li>
++        ))}
++      </ol>
++    </section>
++  );
++}
+diff --git a/frontend/src/components/ResultBanner.tsx b/frontend/src/components/ResultBanner.tsx
+new file mode 100644
+index 0000000..7f83d9f
+--- /dev/null
++++ b/frontend/src/components/ResultBanner.tsx
+@@ -0,0 +1,13 @@
++import type { EndReason, MatchResult } from "../types/api";
++
++const NAME = { INTER: "Inter", GREMIO: "Grêmio" } as const;
++
++export default function ResultBanner({ result, endReason }: { result: MatchResult | null; endReason: EndReason | null }) {
++  const win = result === "INTER" || result === "GREMIO";
++  return (
++    <header className={`result-banner ${result?.toLowerCase() ?? ""}`}>
++      <h1>{win ? `${NAME[result]} venceu a Corda Brava!` : "Empate! Ninguém levou a corda."}</h1>
++      <p>{endReason === "win" ? "A corda foi arrastada até o fim!" : "O tempo acabou."}</p>
++    </header>
++  );
++}
+diff --git a/frontend/src/components/Rope.tsx b/frontend/src/components/Rope.tsx
+new file mode 100644
+index 0000000..779374d
+--- /dev/null
++++ b/frontend/src/components/Rope.tsx
+@@ -0,0 +1,9 @@
++/** Rope + knot as plain CSS shapes (not club characters). */
++export default function Rope({ left }: { left: number }) {
++  return (
++    <div className="rope">
++      <div className="rope-line" />
++      <div className="rope-knot" data-testid="knot" style={{ left: `${left}%` }} />
++    </div>
++  );
++}
+diff --git a/frontend/src/components/RopeScene.test.tsx b/frontend/src/components/RopeScene.test.tsx
+new file mode 100644
+index 0000000..b3c2d00
+--- /dev/null
++++ b/frontend/src/components/RopeScene.test.tsx
+@@ -0,0 +1,18 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { expect, it } from "vitest";
++import RopeScene, { knotLeftPercent } from "./RopeScene";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++
++it("knotLeftPercent maps rope to 10..90%", () => {
++  expect(knotLeftPercent(-100, 100)).toBeCloseTo(10);
++  expect(knotLeftPercent(100, 100)).toBeCloseTo(90);
++  expect(knotLeftPercent(0, 100)).toBeCloseTo(50);
++});
++
++it.each([[-100, "10%"], [100, "90%"], [0, "50%"]])("renders knot for rope=%i", async (rope, left) => {
++  const host = document.createElement("div");
++  await act(async () => createRoot(host).render(createElement(RopeScene, { rope, target: 100, interpolate: false })));
++  expect(host.querySelector<HTMLElement>("[data-testid=knot]")!.style.left).toBe(left);
++});
+diff --git a/frontend/src/components/RopeScene.tsx b/frontend/src/components/RopeScene.tsx
+new file mode 100644
+index 0000000..5c1228a
+--- /dev/null
++++ b/frontend/src/components/RopeScene.tsx
+@@ -0,0 +1,49 @@
++import { useEffect, useRef, useState } from "react";
++import type { TeamId } from "../types/api";
++import { Mascot, type MascotState } from "./Mascot";
++import Rope from "./Rope";
++
++export const knotLeftPercent = (rope: number, target: number): number => 50 + (rope / target) * 40;
++
++/** Eases toward `target` each animation frame; `enabled=false` snaps. */
++function useSmooth(target: number, enabled: boolean): number {
++  const [v, setV] = useState(target);
++  const ref = useRef(target);
++  useEffect(() => {
++    if (!enabled) return;
++    let id = requestAnimationFrame(function step() {
++      ref.current += (target - ref.current) * 0.15;
++      if (Math.abs(target - ref.current) < 0.05) ref.current = target;
++      setV(ref.current);
++      id = requestAnimationFrame(step);
++    });
++    return () => cancelAnimationFrame(id);
++  }, [target, enabled]);
++  return enabled ? v : target;
++}
++
++interface Props {
++  rope: number;
++  target: number;
++  delta?: Record<TeamId, number>;
++  mascots?: Record<TeamId, MascotState>;
++  interpolate?: boolean;
++}
++
++export default function RopeScene({ rope, target, delta, mascots, interpolate = true }: Props) {
++  const goal = knotLeftPercent(rope, target);
++  const left = useSmooth(goal, interpolate);
++  const shake = Math.abs(goal - left) > 4; // big swing still in flight
++  const push = (t: TeamId) => ((mascots?.[t] ?? "straining") === "straining" ? 1 + Math.min(0.25, (delta?.[t] ?? 0) / 400) : 1);
++  return (
++    <div className={`rope-scene${shake ? " shake" : ""}`}>
++      <div className="scene-mascot" style={{ transform: `scale(${push("inter")})` }}>
++        <Mascot team="inter" state={mascots?.inter ?? "straining"} size={160} />
++      </div>
++      <Rope left={left} />
++      <div className="scene-mascot" style={{ transform: `scale(${push("gremio")})` }}>
++        <Mascot team="gremio" state={mascots?.gremio ?? "straining"} size={160} />
++      </div>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/Timer.tsx b/frontend/src/components/Timer.tsx
+new file mode 100644
+index 0000000..e80ebad
+--- /dev/null
++++ b/frontend/src/components/Timer.tsx
+@@ -0,0 +1,10 @@
++import { useCountdown } from "../hooks/useCountdown";
++
++export default function Timer({ remainingS, running }: { remainingS: number; running: boolean }) {
++  const s = Math.ceil(useCountdown(remainingS, running));
++  return (
++    <div className="match-timer" aria-label="Tempo restante">
++      {Math.floor(s / 60)}:{String(s % 60).padStart(2, "0")}
++    </div>
++  );
++}
+diff --git a/frontend/src/components/charts/PullsTimeline.tsx b/frontend/src/components/charts/PullsTimeline.tsx
+new file mode 100644
+index 0000000..2c97d96
+--- /dev/null
++++ b/frontend/src/components/charts/PullsTimeline.tsx
+@@ -0,0 +1,19 @@
++import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
++import type { AnalyticsPayload } from "../../types/api";
++import { teams } from "../../theme/tokens";
++
++export default function PullsTimeline({ data }: { data: AnalyticsPayload["pullsPerSecond"] }) {
++  return (
++    <ResponsiveContainer width="100%" height={260}>
++      <AreaChart data={data}>
++        <CartesianGrid stroke="#333" />
++        <XAxis dataKey="t" unit="s" stroke="#9a9ab0" />
++        <YAxis stroke="#9a9ab0" />
++        <Tooltip contentStyle={{ background: "#1d1d2e" }} />
++        <Legend />
++        <Area type="monotone" dataKey="inter" name="Inter" stroke={teams.inter.primary} fill={teams.inter.primary} fillOpacity={0.4} />
++        <Area type="monotone" dataKey="gremio" name="Grêmio" stroke={teams.gremio.primary} fill={teams.gremio.primary} fillOpacity={0.4} />
++      </AreaChart>
++    </ResponsiveContainer>
++  );
++}
+diff --git a/frontend/src/hooks/useCountdown.test.tsx b/frontend/src/hooks/useCountdown.test.tsx
+new file mode 100644
+index 0000000..39c63dc
+--- /dev/null
++++ b/frontend/src/hooks/useCountdown.test.tsx
+@@ -0,0 +1,23 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { afterEach, expect, it, vi } from "vitest";
++import { useCountdown } from "./useCountdown";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++afterEach(() => vi.useRealTimers());
++
++function C({ s }: { s: number }) {
++  return createElement("span", null, useCountdown(s).toFixed(1));
++}
++
++it("counts down between ticks and clamps at 0", async () => {
++  vi.useFakeTimers();
++  const host = document.createElement("div");
++  const root = createRoot(host);
++  await act(async () => root.render(createElement(C, { s: 10 })));
++  expect(host.textContent).toBe("10.0");
++  await act(async () => void vi.advanceTimersByTime(2000));
++  expect(host.textContent).toBe("8.0");
++  await act(async () => void vi.advanceTimersByTime(20000));
++  expect(host.textContent).toBe("0.0");
++});
+diff --git a/frontend/src/hooks/useCountdown.ts b/frontend/src/hooks/useCountdown.ts
+new file mode 100644
+index 0000000..abef3b5
+--- /dev/null
++++ b/frontend/src/hooks/useCountdown.ts
+@@ -0,0 +1,14 @@
++import { useEffect, useState } from "react";
++
++/** Visual countdown: counts down from the latest server `remainingS` between ticks; clamped at 0. */
++export function useCountdown(remainingS: number, running = true): number {
++  const [now, setNow] = useState(0);
++  const [base, setBase] = useState({ remainingS, at: Date.now() });
++  if (base.remainingS !== remainingS) setBase({ remainingS, at: Date.now() });
++  useEffect(() => {
++    if (!running) return;
++    const i = setInterval(() => setNow(Date.now()), 100);
++    return () => clearInterval(i);
++  }, [running]);
++  return running && now > base.at ? Math.max(0, base.remainingS - (now - base.at) / 1000) : Math.max(0, remainingS);
++}
+diff --git a/frontend/src/pages/HostMatch.tsx b/frontend/src/pages/HostMatch.tsx
+new file mode 100644
+index 0000000..60a8132
+--- /dev/null
++++ b/frontend/src/pages/HostMatch.tsx
+@@ -0,0 +1,32 @@
++import { Navigate, useParams } from "react-router-dom";
++import { useHostSocket } from "../hooks/useHostSocket";
++import { Crest } from "../components/Crest";
++import RopeScene from "../components/RopeScene";
++import Timer from "../components/Timer";
++import { getHostToken } from "./HostLogin";
++
++export default function HostMatch() {
++  const { id = "" } = useParams();
++  const token = getHostToken() ?? "";
++  const { snapshot, lastTick, ended, terminal, authError } = useHostSocket(id, token);
++
++  if (!token || authError) return <Navigate to="/host/login" replace />;
++  // Analytics ride along in router state so Results needs no extra fetch.
++  if (ended) return <Navigate to={`/host/results/${id}`} replace state={ended} />;
++  if (terminal) return <Navigate to={terminal.type === "reset" ? `/host/lobby/${terminal.newMatchId}` : "/host/create"} replace />;
++  if (!snapshot) return <main className="host-page"><p>Conectando…</p></main>;
++  if (snapshot.status === "LOBBY") return <Navigate to={`/host/lobby/${id}`} replace />;
++  if (snapshot.status === "FINISHED") return <Navigate to={`/host/results/${id}`} replace />;
++
++  const { scores, config } = snapshot;
++  return (
++    <main className="host-page match">
++      <div className="match-hud">
++        <span className="score inter"><Crest team="inter" /> {scores.inter.pulls}</span>
++        <Timer remainingS={snapshot.remainingS} running />
++        <span className="score gremio">{scores.gremio.pulls} <Crest team="gremio" /></span>
++      </div>
++      <RopeScene rope={snapshot.rope} target={config.ropeTarget} delta={lastTick?.delta} />
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/HostResults.test.tsx b/frontend/src/pages/HostResults.test.tsx
+new file mode 100644
+index 0000000..289b486
+--- /dev/null
++++ b/frontend/src/pages/HostResults.test.tsx
+@@ -0,0 +1,47 @@
++import { createElement, act } from "react";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter, Route, Routes } from "react-router-dom";
++import { beforeEach, expect, it, vi } from "vitest";
++import HostResults from "./HostResults";
++import type { AnalyticsPayload, MatchResult } from "../types/api";
++
++(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++vi.mock("../components/charts/PullsTimeline", () => ({ default: () => null }));
++beforeEach(() => {
++  document.body.innerHTML = "";
++  sessionStorage.setItem("cb.hostToken", "T");
++});
++
++const team = { players: 1, totalPulls: 0, avgPullsPerPlayer: 0, bestPlayer: null, worstPlayer: null };
++const analytics = (result: MatchResult): AnalyticsPayload => ({
++  result, endReason: result === "DRAW" ? "timeout" : "win", durationS: 30, totalPlayers: 2,
++  playersPerTeam: { inter: 1, gremio: 1 }, totalPulls: { overall: 0, inter: 0, gremio: 0 },
++  pullsPerSecond: [], peak: { value: 0, t: 0 }, finalRope: 0, teams: { inter: team, gremio: team }, players: [], leaderboard: [],
++});
++
++async function render(result: MatchResult) {
++  const host = document.createElement("div");
++  document.body.append(host);
++  await act(async () =>
++    createRoot(host).render(
++      createElement(MemoryRouter, { initialEntries: [{ pathname: "/host/results/m1", state: { analytics: analytics(result) } }] },
++        createElement(Routes, null, createElement(Route, { path: "/host/results/:id", element: createElement(HostResults) }))),
++    ),
++  );
++  return host;
++}
++const srcs = (h: HTMLElement) => [...h.querySelectorAll<HTMLImageElement>(".results-mascots img")].map((i) => i.src);
++
++it("winner happy, loser crying, banner copy", async () => {
++  const h = await render("INTER");
++  expect(h.querySelector(".result-banner")?.textContent).toContain("Inter venceu");
++  const [i, g] = srcs(h);
++  expect(i).toMatch(/saci_happy/);
++  expect(g).toMatch(/mosq_cry/);
++});
++
++it("draw: both idle", async () => {
++  const h = await render("DRAW");
++  expect(h.querySelector(".result-banner")?.textContent).toContain("Empate");
++  expect(srcs(h).map((s) => /master/.test(s))).toEqual([true, true]);
++});
+diff --git a/frontend/src/pages/HostResults.tsx b/frontend/src/pages/HostResults.tsx
+new file mode 100644
+index 0000000..db7b50b
+--- /dev/null
++++ b/frontend/src/pages/HostResults.tsx
+@@ -0,0 +1,55 @@
++import { useEffect, useState } from "react";
++import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
++import { getAnalytics, resetMatch } from "../api/hostApi";
++import { ApiError } from "../api/client";
++import AnalyticsGrid from "../components/AnalyticsGrid";
++import { Mascot, type MascotState } from "../components/Mascot";
++import ResultBanner from "../components/ResultBanner";
++import type { AnalyticsPayload, TeamId } from "../types/api";
++import { getHostToken } from "./HostLogin";
++
++const endStates = (r: AnalyticsPayload["result"]): Record<TeamId, MascotState> =>
++  // DRAW: no "exhausted" sprite exists, so both idle.
++  r === "INTER" ? { inter: "happy", gremio: "crying" } : r === "GREMIO" ? { inter: "crying", gremio: "happy" } : { inter: "idle", gremio: "idle" };
++
++export default function HostResults() {
++  const { id = "" } = useParams();
++  const token = getHostToken() ?? "";
++  const nav = useNavigate();
++  const routed = (useLocation().state as { analytics?: AnalyticsPayload } | null)?.analytics ?? null;
++  const [fetched, setFetched] = useState<AnalyticsPayload | null>(null);
++  const [err, setErr] = useState("");
++  const a = routed ?? fetched;
++
++  useEffect(() => {
++    if (routed || !token) return;
++    getAnalytics(token, id).then(setFetched, (x) => {
++      if (x instanceof ApiError && x.status === 401) nav("/host/login", { replace: true });
++      else setErr("Não foi possível carregar os resultados.");
++    });
++  }, [routed, token, id, nav]);
++
++  if (!token) return <Navigate to="/host/login" replace />;
++
++  async function again() {
++    try {
++      nav(`/host/lobby/${(await resetMatch(token, id)).matchId}`);
++    } catch {
++      nav("/host/create"); // match gone (e.g. server restarted)
++    }
++  }
++
++  if (!a) return <main className="host-page"><p role={err ? "alert" : undefined}>{err || "Carregando…"}</p></main>;
++  const st = endStates(a.result);
++  return (
++    <main className="host-page results">
++      <ResultBanner result={a.result} endReason={a.endReason} />
++      <div className="results-mascots">
++        <Mascot team="inter" state={st.inter} size={200} />
++        <Mascot team="gremio" state={st.gremio} size={200} />
++      </div>
++      <AnalyticsGrid a={a} />
++      <button className="join-submit start-btn" onClick={again}>Nova Partida</button>
++    </main>
++  );
++}
+diff --git a/frontend/src/theme/global.css b/frontend/src/theme/global.css
+index 6a6260b..67b61af 100644
+--- a/frontend/src/theme/global.css
++++ b/frontend/src/theme/global.css
+@@ -102,3 +102,26 @@ canvas {
+ .player-icon.gremio .player-icon-block { background: var(--gremio); }
+ .start-btn { padding-inline: var(--sp-xl); font-size: 20px; }
+ @keyframes player-pop { from { transform: scale(0) translateY(-40px); opacity: 0; } to { transform: none; opacity: 1; } }
++
++/* Host match + results */
++.match-hud { display: flex; justify-content: space-between; align-items: center; width: 100%; font-size: 28px; }
++.match-hud .score { display: flex; align-items: center; gap: var(--sp-md); }
++.match-timer { font-size: 56px; }
++.rope-scene { display: flex; align-items: center; width: 100%; margin-top: var(--sp-xl); }
++.rope-scene.shake { animation: cb-shake 120ms linear infinite; }
++@keyframes cb-shake { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(-3px, 2px); } 75% { transform: translate(3px, -2px); } }
++.scene-mascot { flex: none; transition: transform var(--motion-fast, 80ms); }
++.rope { position: relative; flex: 1; height: 40px; }
++.rope-line { position: absolute; top: 16px; left: 0; right: 0; height: 8px; background: #b8863b; }
++.rope-knot { position: absolute; top: 4px; width: 32px; height: 32px; margin-left: -16px; background: #f4f4f4; border: 4px solid #12121c; }
++.result-banner p { color: var(--muted); }
++.results-mascots { display: flex; gap: var(--sp-xl); justify-content: center; }
++.tiles, .team-tiles { display: flex; flex-wrap: wrap; gap: var(--sp-md); justify-content: center; width: 100%; }
++.tile { background: var(--panel); padding: var(--sp-md); display: flex; flex-direction: column; gap: var(--sp-sm); font-size: 12px; min-width: 160px; }
++.team-card { display: flex; flex-direction: column; gap: var(--sp-sm); }
++.team-card.inter h3 { color: var(--inter); }
++.team-card.gremio h3 { color: var(--gremio-light); }
++.leaderboard { text-align: left; font-size: 14px; line-height: 2; }
++.leaderboard .inter { color: var(--inter); }
++.leaderboard .gremio { color: var(--gremio-light); }
++.analytics { width: 100%; max-width: 1100px; }

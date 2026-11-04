@@ -1,0 +1,63 @@
+diff --git a/frontend/src/components/AnalyticsGrid.tsx b/frontend/src/components/AnalyticsGrid.tsx
+index e6b2185..54f9848 100644
+--- a/frontend/src/components/AnalyticsGrid.tsx
++++ b/frontend/src/components/AnalyticsGrid.tsx
+@@ -37,7 +37,7 @@ export default function AnalyticsGrid({ a }: { a: AnalyticsPayload }) {
+       <ol className="leaderboard">
+         {a.leaderboard.map((p) => (
+           <li key={p.playerId} className={p.team}>
+-            {p.name} — {p.pulls} puxadas ({p.pctOfTeam}% do time)
++            {p.name} — {p.pulls} puxadas ({p.pctOfTeam}% do time, {p.pctOfAll}% do total, {p.pullsPerSec}/s)
+           </li>
+         ))}
+       </ol>
+diff --git a/frontend/src/components/RopeScene.test.tsx b/frontend/src/components/RopeScene.test.tsx
+index b3c2d00..b9a328d 100644
+--- a/frontend/src/components/RopeScene.test.tsx
++++ b/frontend/src/components/RopeScene.test.tsx
+@@ -9,6 +9,7 @@ it("knotLeftPercent maps rope to 10..90%", () => {
+   expect(knotLeftPercent(-100, 100)).toBeCloseTo(10);
+   expect(knotLeftPercent(100, 100)).toBeCloseTo(90);
+   expect(knotLeftPercent(0, 100)).toBeCloseTo(50);
++  expect(knotLeftPercent(10, 0)).toBe(50);
+ });
+ 
+ it.each([[-100, "10%"], [100, "90%"], [0, "50%"]])("renders knot for rope=%i", async (rope, left) => {
+diff --git a/frontend/src/components/RopeScene.tsx b/frontend/src/components/RopeScene.tsx
+index 5c1228a..fe51031 100644
+--- a/frontend/src/components/RopeScene.tsx
++++ b/frontend/src/components/RopeScene.tsx
+@@ -3,7 +3,7 @@ import type { TeamId } from "../types/api";
+ import { Mascot, type MascotState } from "./Mascot";
+ import Rope from "./Rope";
+ 
+-export const knotLeftPercent = (rope: number, target: number): number => 50 + (rope / target) * 40;
++export const knotLeftPercent = (rope: number, target: number): number => (target > 0 ? 50 + (rope / target) * 40 : 50);
+ 
+ /** Eases toward `target` each animation frame; `enabled=false` snaps. */
+ function useSmooth(target: number, enabled: boolean): number {
+@@ -13,9 +13,10 @@ function useSmooth(target: number, enabled: boolean): number {
+     if (!enabled) return;
+     let id = requestAnimationFrame(function step() {
+       ref.current += (target - ref.current) * 0.15;
+-      if (Math.abs(target - ref.current) < 0.05) ref.current = target;
++      const done = Math.abs(target - ref.current) < 0.01;
++      if (done) ref.current = target;
+       setV(ref.current);
+-      id = requestAnimationFrame(step);
++      if (!done) id = requestAnimationFrame(step); // converged: stop re-arming until target changes
+     });
+     return () => cancelAnimationFrame(id);
+   }, [target, enabled]);
+diff --git a/frontend/src/pages/HostResults.tsx b/frontend/src/pages/HostResults.tsx
+index db7b50b..75cf547 100644
+--- a/frontend/src/pages/HostResults.tsx
++++ b/frontend/src/pages/HostResults.tsx
+@@ -25,6 +25,7 @@ export default function HostResults() {
+     if (routed || !token) return;
+     getAnalytics(token, id).then(setFetched, (x) => {
+       if (x instanceof ApiError && x.status === 401) nav("/host/login", { replace: true });
++      else if (x instanceof ApiError && x.status === 409) nav(`/host/match/${id}`, { replace: true }); // not finished yet
+       else setErr("Não foi possível carregar os resultados.");
+     });
+   }, [routed, token, id, nav]);

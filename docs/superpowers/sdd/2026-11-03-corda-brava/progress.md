@@ -169,3 +169,15 @@ Minors deferred (Task 15): (a) no tests for HostCreate / reconnect snapshot repl
 Ruling (dev run): added .claude/launch.json (backend uvicorn :8000 with --host 0.0.0.0, frontend vite :5173) so the user can watch the app in dev mode. For phones on LAN set PUBLIC_BASE_URL=http://<LAN-IP>:5173 (and Vite must listen on 0.0.0.0 — Task 17/18 docs).
 
 NEXT: Task 16 (HostMatch + HostResults). BASE = HEAD after this docs commit.
+
+Ruling (owner asset edit): USER asked (direct msg) to remove the white background of the Inter crest. Controller flood-filled the outer white (connected to the image borders, thresh 40) to transparent, keeping the crest's own white ring/letters; replaced docs/logo-references/inter.png and the frontend copy (still byte-identical, cmp-verified). Commit 95e2275. This edits the owner's image file at the owner's request — no code renders the crest.
+
+Task 16: first dispatch stopped by user before any change; restarted on user instruction.
+Task 16: implemented (commit 6e82ccb; report a16e26e; vitest 49/49, tsc/build/lint clean; recharts added — build warns 580 kB chunk). HostMatch: RopeScene (Inter left, Grêmio right, both straining; scale up to 1.25 with delta; shake when knot > 4 pts from goal), knotLeftPercent(rope, target) = 50 + rope/target*40 (target = snapshot.config.ropeTarget), rAF easing 15%/frame, Timer via useCountdown (resync per tick, clamp 0). Navigation: ended -> /host/results/:id with EndedMsg in router state; cancelled -> /host/create; reset -> /host/lobby/<newMatchId>; authError/no token -> /host/login; LOBBY/FINISHED snapshot -> lobby/results. HostResults: analytics from router state, else GET analytics; winner happy / loser crying / DRAW both idle (no exhausted sprite); banners "Inter venceu a Corda Brava!" / "Grêmio venceu…" / "Empate! Ninguém levou a corda."; AnalyticsGrid tiles + PullsTimeline (Recharts area) + leaderboard; "Nova Partida" -> reset -> /host/lobby/<matchId>, fallback /host/create.
+Task 16: review (sonnet-1M) — Spec ✅, Quality Approved, minors only.
+Task 16: polish round (commit 844df23; report 1cffef1; vitest 49/49): rAF stops once converged; knotLeftPercent returns 50 when target <= 0 (+test); results 409 -> redirect /host/match/:id; leaderboard adds pctOfAll + pullsPerSec. Verified by controller: vitest 49/49, tsc clean.
+Task 16: complete (commits 95e2275..844df23, review clean).
+Minors deferred (Task 16): (a) shake/scale intensity doesn't decay if ticks stop (bounded); (b) chart axis/grid/tooltip colors hard-coded; (c) no tests for HostMatch redirects / analytics fetch fallback / interpolation; (d) recharts 580 kB chunk (could lazy-load results page); (e) NOT yet seen in a browser or run as a live match — dev servers were stopped by the user.
+
+## PHASE C COMPLETE (Tasks 11–16). Backend 144 tests, frontend 49 tests.
+NEXT: Phase D — Task 17 (Docker compose single-port stack + .env.example). BASE = HEAD after this docs commit. Carry: Vite must listen on 0.0.0.0 for LAN, PUBLIC_BASE_URL docs, beacon same-origin (Task 13 minor b).
