@@ -85,3 +85,20 @@ canvas {
   from { opacity: 1; transform: translate(-50%, 0); }
   to { opacity: 0; transform: translate(-50%, -80px); }
 }
+
+/* ---- Host pages (big screen) ---- */
+.host-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; gap: var(--sp-lg); padding: var(--sp-xl); text-align: center; }
+.host-page h1 { font-size: 32px; }
+.host-page select { font: inherit; padding: var(--sp-md); background: var(--panel); color: var(--text); border: 2px solid var(--muted); }
+.qr-btn { padding: var(--sp-md); background: #fff; border: 0; cursor: zoom-in; line-height: 0; }
+.qr-overlay { position: fixed; inset: 0; z-index: var(--z-overlay); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-lg); background: #fff; color: #000; cursor: zoom-out; }
+.join-url { font-size: 14px; color: var(--muted); word-break: break-all; }
+.lobby-teams { display: flex; gap: var(--sp-xl); width: 100%; justify-content: center; align-items: flex-start; }
+.team-column { flex: 1; max-width: 560px; padding: var(--sp-lg); background: var(--panel); border-top: 8px solid var(--inter); display: flex; flex-direction: column; align-items: center; gap: var(--sp-md); }
+.team-column.gremio { border-top-color: var(--gremio); }
+.team-roster { display: flex; flex-wrap: wrap; gap: var(--sp-md); justify-content: center; }
+.player-icon { display: flex; flex-direction: column; align-items: center; gap: var(--sp-xs); font-size: 12px; animation: player-pop 0.5s steps(5) both; }
+.player-icon-block { width: 48px; height: 48px; display: grid; place-items: center; background: var(--inter); color: #fff; box-shadow: 4px 4px 0 #0006; }
+.player-icon.gremio .player-icon-block { background: var(--gremio); }
+.start-btn { padding-inline: var(--sp-xl); font-size: 20px; }
+@keyframes player-pop { from { transform: scale(0) translateY(-40px); opacity: 0; } to { transform: none; opacity: 1; } }

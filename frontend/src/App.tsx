@@ -1,3 +1,6 @@
+import HostCreate from "./pages/HostCreate";
+import HostLobby from "./pages/HostLobby";
+import HostLogin from "./pages/HostLogin";
 import PlayerEnd from "./pages/PlayerEnd";
 import PlayerJoin from "./pages/PlayerJoin";
 import PlayerPlay from "./pages/PlayerPlay";
@@ -19,9 +22,9 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/host/login" replace />} />
-      <Route path="/host/login" element={<Placeholder title="Entrar como host" />} />
-      <Route path="/host/create" element={<Placeholder title="Nova partida" />} />
-      <Route path="/host/lobby/:id" element={<Placeholder title="Sala de espera" hasId />} />
+      <Route path="/host/login" element={<HostLogin />} />
+      <Route path="/host/create" element={<HostCreate />} />
+      <Route path="/host/lobby/:id" element={<HostLobby />} />
       <Route path="/host/match/:id" element={<Placeholder title="Partida em andamento" hasId />} />
       <Route path="/host/results/:id" element={<Placeholder title="Resultados" hasId />} />
       <Route path="/j/:id" element={<PlayerJoin />} />
