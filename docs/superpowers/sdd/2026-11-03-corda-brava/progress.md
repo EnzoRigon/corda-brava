@@ -198,3 +198,6 @@ Task 18: complete (commits 0e77cdc..5126670, review clean).
 Minors deferred (Task 18): (a) tsconfig include omits e2e/ + playwright.config.ts; (b) README layout section still terse for frontend/tests; (c) E2E covers timeout end only, not rope win.
 
 ## ALL 18 PLAN TASKS COMPLETE. Final whole-project review (opus) dispatched.
+
+## POLISH PHASE (owner request 2026-11-04)
+Plan: docs/superpowers/plans/2026-11-04-corda-brava-polish.md (P1–P7). P1 (assets) and P2 (backend tick events) run in parallel — disjoint files.
