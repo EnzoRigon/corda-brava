@@ -68,12 +68,14 @@ export interface AnalyticsPayload {
 // ---- Host WebSocket messages (prompt.md section 14 + cancelled/reset) ----
 export interface Snapshot { type: "snapshot"; match: MatchView }
 export interface PlayerJoinedMsg { type: "player_joined"; team: TeamId; player: RosterPlayer }
+export interface TickEvent { playerId: string; name: string; team: TeamId; count: number }
 export interface TickMsg {
   type: "tick";
   rope: number;
   remainingS: number;
   delta: Record<TeamId, number>;
   scores: Record<TeamId, TeamScore>;
+  events: TickEvent[];
 }
 export interface EndedMsg {
   type: "ended";

@@ -64,7 +64,8 @@ class ConsumerLoop:
         msgs = await self._queue.receive_batch(MAX_BATCH_MESSAGES, 0)
         # shortcut: one shared queue for all matches; per-match queues if concurrent matches matter
         roster = self._players.list_players(self.match_id)
-        ids = {p.id for p in roster}
+        names = {p.id: p.name for p in roster}
+        ids = names.keys()
         statuses: dict[str, MatchStatus | None] = {}
         abandon, drop, mine, new_events = [], [], [], []
         delta = {Team.INTER: 0, Team.GREMIO: 0}
@@ -131,6 +132,15 @@ class ConsumerLoop:
                 "rope": match.rope_position,
                 "remainingS": remaining,
                 "delta": {"inter": delta[Team.INTER], "gremio": delta[Team.GREMIO]},
+                "events": [  # most recent 20 applied batches; names come from the roster
+                    {
+                        "playerId": e.player_id,
+                        "name": names[e.player_id],
+                        "team": e.team.value,
+                        "count": e.count,
+                    }
+                    for e in new_events[-20:]
+                ],
                 "scores": {
                     "inter": {"pulls": self._scores[Team.INTER]},
                     "gremio": {"pulls": self._scores[Team.GREMIO]},

@@ -126,6 +126,30 @@ async def test_duplicate_batch_id_has_no_extra_effect(env: Env) -> None:
     assert len(env.events.list_events(env.match.id)) == 1
 
 
+async def test_tick_events_list_names_teams_counts(env: Env) -> None:
+    loop = env.force_running()
+    await env.pull(Team.GREMIO, 2, "e1")
+    await env.pull(Team.INTER, 1, "e2")
+    await loop.tick()
+    evs = env.sent[-1]["events"]
+    assert sorted((e["name"], e["team"], e["count"]) for e in evs) == [
+        ("gremio", "gremio", 2),
+        ("inter", "inter", 1),
+    ]
+    assert set(evs[0]) == {"playerId", "name", "team", "count"}
+    await env.pull(Team.GREMIO, 2, "e1")  # redelivery: not listed
+    await loop.tick()
+    assert env.sent[-1]["events"] == []
+
+
+async def test_tick_events_capped_at_20_most_recent(env: Env) -> None:
+    loop = env.force_running()
+    for i in range(25):
+        await env.pull(Team.INTER, 0, f"c{i}")
+    await loop.tick()
+    assert len(env.sent[-1]["events"]) == 20
+
+
 async def test_win_finishes_and_run_stops(env: Env) -> None:
     loop = env.force_running()
     await env.pull(Team.GREMIO, 5, "w")

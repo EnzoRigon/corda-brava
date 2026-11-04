@@ -115,7 +115,7 @@ def test_tick_then_ended_with_analytics(client, host) -> None:
             elif msg["type"] == "ended":
                 ended = msg
                 break
-    assert ticks and set(ticks[0]) == {"type", "rope", "remainingS", "delta", "scores"}
+    assert ticks and set(ticks[0]) == {"type", "rope", "remainingS", "delta", "scores", "events"}
     assert ended["result"] in {"INTER", "GREMIO", "DRAW"}
     assert ended["endReason"] in {"win", "timeout"}
     assert ended["analytics"]["totalPulls"]["inter"] == 3
