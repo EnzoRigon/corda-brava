@@ -27,10 +27,9 @@ export function Mascot({ team, state, size = 128, className }: Props) {
       src={SPRITES[team][state]}
       alt={ALT[team]}
       width={size}
-      height={size}
       className={className}
       // Sprites face right; Grêmio is mirrored (as in the owner prototype) to face center.
-      style={{ imageRendering: "pixelated", transform: team === "gremio" ? "scaleX(-1)" : undefined }}
+      style={{ height: "auto", imageRendering: "pixelated", transform: team === "gremio" ? "scaleX(-1)" : undefined }}
     />
   );
 }

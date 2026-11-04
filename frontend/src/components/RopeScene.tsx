@@ -38,11 +38,11 @@ export default function RopeScene({ rope, target, delta, mascots, interpolate = 
   const push = (t: TeamId) => ((mascots?.[t] ?? "straining") === "straining" ? 1 + Math.min(0.25, (delta?.[t] ?? 0) / 400) : 1);
   return (
     <div className={`rope-scene${shake ? " shake" : ""}`}>
-      <div className="scene-mascot" style={{ transform: `scale(${push("inter")})` }}>
+      <div className="scene-mascot" style={{ transform: `scale(${push("inter")})`, transformOrigin: "100% 65%" }}>
         <Mascot team="inter" state={mascots?.inter ?? "straining"} size={160} />
       </div>
       <Rope left={left} />
-      <div className="scene-mascot" style={{ transform: `scale(${push("gremio")})` }}>
+      <div className="scene-mascot" style={{ transform: `scale(${push("gremio")})`, transformOrigin: "0% 65%" }}>
         <Mascot team="gremio" state={mascots?.gremio ?? "straining"} size={160} />
       </div>
     </div>
