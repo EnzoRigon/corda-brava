@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
 import * as api from "../api/playerApi";
-import PlayerJoin from "./PlayerJoin";
+import PlayerJoin, { PUBLIC_POLL_MS } from "./PlayerJoin";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -97,6 +97,55 @@ describe("PlayerJoin", () => {
     await click(byText("Entrar"));
     expect(join).not.toHaveBeenCalled();
     expect(host.querySelector("[role=alert]")!.textContent).toBe("Digite seu nome.");
+  });
+
+  it("refreshes the team counts while the form is open", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      expect(byText("Grêmio").textContent).toContain("3 jogadores");
+      getPublic.mockResolvedValue({
+        status: "LOBBY",
+        teams: { inter: { name: "Inter", colors }, gremio: { name: "Grêmio", colors } },
+        counts: { inter: 2, gremio: 4 },
+        durationS: 60,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PUBLIC_POLL_MS);
+      });
+      expect(byText("Grêmio").textContent).toContain("4 jogadores");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the last counts when a refresh fails", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      getPublic.mockRejectedValue(new Error("offline"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PUBLIC_POLL_MS);
+      });
+      expect(byText("Grêmio").textContent).toContain("3 jogadores");
+      expect(host.querySelector("[role=alert]")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling once it is gone", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      unmount();
+      unmount = () => undefined;
+      const calls = getPublic.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(PUBLIC_POLL_MS * 3);
+      expect(getPublic.mock.calls.length).toBe(calls);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("skips the form when a session is stored", async () => {

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 import uuid
+from functools import partial
 
 from fastapi import APIRouter, HTTPException
 
-from app.api.deps import ContainerDep
+from app.api.deps import Container, ContainerDep
 from app.domain.entities import Match, Player, PullEvent
 from app.domain.enums import MatchStatus, Team
 from app.repositories.interfaces import UniqueConstraintError
@@ -25,6 +28,7 @@ from app.services.match_service import ConflictError, MatchNotFoundError
 from app.services.player_session import issue_player_token, verify_player_token
 
 router = APIRouter(prefix="/api/matches", tags=["player"])
+log = logging.getLogger(__name__)
 
 LATE_JOIN_DETAIL = "A partida já começou"
 
@@ -97,6 +101,7 @@ async def join(match_id: str, body: JoinRequest, c: ContainerDep) -> JoinRespons
 
 
 NOT_RUNNING_DETAIL = "A partida não está em andamento"
+QUEUE_UNAVAILABLE_DETAIL = "Fila indisponível, tente novamente"
 _SCREEN = {MatchStatus.LOBBY: "wait", MatchStatus.RUNNING: "play", MatchStatus.FINISHED: "end"}
 
 
@@ -126,20 +131,41 @@ async def pulls(match_id: str, body: PullRequest, c: ContainerDep) -> PullAccept
     for k in [k for k, exp in c.seen_batches.items() if exp <= now]:
         del c.seen_batches[k]
     key = f"{match_id}:{body.batchId}"
-    if key not in c.seen_batches:
-        c.seen_batches[key] = now + c.settings.BATCH_DEDUP_TTL_S
-        await c.queue.enqueue(
-            PullEvent(
-                id=str(uuid.uuid4()),
-                match_id=match_id,
-                player_id=player.id,
-                team=player.team,
-                count=count,
-                client_ts=body.clientTs,
-                batch_id=body.batchId,
-            )
+    if key in c.seen_batches:
+        return PullAccepted(accepted=count)
+    # A resend of a batch whose enqueue is still in flight (fetch retry, sendBeacon) shares that
+    # enqueue and its outcome instead of producing a second message.
+    task = c.inflight_batches.get(key)
+    if task is None:
+        event = PullEvent(
+            id=str(uuid.uuid4()),
+            match_id=match_id,
+            player_id=player.id,
+            team=player.team,
+            count=count,
+            client_ts=body.clientTs,
+            batch_id=body.batchId,
         )
+        task = asyncio.ensure_future(c.queue.enqueue(event))
+        c.inflight_batches[key] = task
+        task.add_done_callback(partial(_enqueue_done, c, key))
+    try:
+        await asyncio.shield(task)  # a client hanging up must not cancel a shared enqueue
+    except Exception:  # noqa: BLE001 - a broker outage must surface as a retryable 503
+        raise HTTPException(status_code=503, detail=QUEUE_UNAVAILABLE_DETAIL) from None
     return PullAccepted(accepted=count)
+
+
+def _enqueue_done(c: Container, key: str, task: asyncio.Task[None]) -> None:
+    """Mark the batch seen once the broker accepted it; a failure leaves it free to retry."""
+    c.inflight_batches.pop(key, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is None:
+        c.seen_batches[key] = time.monotonic() + c.settings.BATCH_DEDUP_TTL_S
+    else:
+        log.error("enqueue failed for batch %s", key, exc_info=exc)
 
 
 @router.get("/{match_id}/me", response_model=MeResponse, response_model_exclude_none=True)

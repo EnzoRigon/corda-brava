@@ -11,6 +11,8 @@ import { loadSession, saveSession } from "../hooks/useMePolling";
 import type { PublicMatch, TeamId } from "../types/api";
 
 const TEAMS: TeamId[] = ["inter", "gremio"];
+/** How often the team counts refresh while the form is open (players poll; no player WebSocket). */
+export const PUBLIC_POLL_MS = 1000;
 
 export default function PlayerJoin() {
   const { id = "" } = useParams();
@@ -20,6 +22,7 @@ export default function PlayerJoin() {
   const [name, setName] = useState("");
   const [team, setTeam] = useState<TeamId | null>(null);
   const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -28,9 +31,33 @@ export default function PlayerJoin() {
       navigate(`/j/${id}/wait`, { replace: true });
       return;
     }
-    getPublic(id)
-      .then(setPub)
-      .catch((e) => setError(e instanceof ApiError ? e.message : "Não foi possível carregar a partida."));
+    let alive = true;
+    let loaded = false;
+    let inFlight = false; // no overlapping requests, so an old response never overwrites a newer one
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const p = await getPublic(id);
+        if (!alive) return;
+        loaded = true;
+        setPub(p);
+        setLoadError("");
+      } catch (e) {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 404) clearInterval(timer); // no such match
+        // A blip after a successful load keeps the last counts on screen.
+        if (!loaded) setLoadError(e instanceof ApiError ? e.message : "Não foi possível carregar a partida.");
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = setInterval(() => void poll(), PUBLIC_POLL_MS);
+    void poll();
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
   }, [id, navigate]);
 
   const submit = async (e: FormEvent) => {
@@ -77,7 +104,7 @@ export default function PlayerJoin() {
             </button>
           ))}
         </div>
-        {error && <p role="alert">{error}</p>}
+        {(error || loadError) && <p role="alert">{error || loadError}</p>}
         <PixelButton type="submit" disabled={busy}>
           Entrar
         </PixelButton>

@@ -11,8 +11,8 @@ Coverage:
 * abandon returns a message to pending immediately (next receive_batch picks it up)
 * receive_batch returns empty within max_wait_s when queue is empty
 * factory: make_event_queue(memory settings) → InMemoryEventQueue instance
-* factory: make_event_queue(azure_service_bus settings) → NotImplementedError
-  mentioning AzureServiceBusEventQueue
+* factory: make_event_queue(azure_service_bus settings) → AzureServiceBusEventQueue,
+  or ValueError when its connection string / queue name are missing
 """
 
 from __future__ import annotations
@@ -218,11 +218,30 @@ def test_factory_memory_returns_inmemory_instance() -> None:
     assert isinstance(queue, InMemoryEventQueue)
 
 
-def test_factory_azure_raises_not_implemented() -> None:
-    """make_event_queue with azure_service_bus raises NotImplementedError."""
-    settings = Settings(QUEUE_BACKEND="azure_service_bus")
-    with pytest.raises(NotImplementedError) as exc_info:
+def test_factory_azure_returns_the_adapter_without_connecting() -> None:
+    """make_event_queue with azure_service_bus builds the adapter (start() connects)."""
+    from app.queue.azure_service_bus import AzureServiceBusEventQueue
+
+    settings = Settings(
+        QUEUE_BACKEND="azure_service_bus",
+        AZURE_SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;"
+        "SharedAccessKeyName=k;SharedAccessKey=v",
+        AZURE_SERVICEBUS_QUEUE_NAME="pulls",
+    )
+    assert isinstance(make_event_queue(settings), AzureServiceBusEventQueue)
+
+
+@pytest.mark.parametrize(
+    "missing", ["AZURE_SERVICEBUS_CONNECTION_STRING", "AZURE_SERVICEBUS_QUEUE_NAME"]
+)
+def test_factory_azure_requires_connection_string_and_queue_name(missing: str) -> None:
+    """A half-configured azure backend fails at startup instead of on the first pull."""
+    values = {
+        "AZURE_SERVICEBUS_CONNECTION_STRING": "Endpoint=sb://example.servicebus.windows.net/;"
+        "SharedAccessKeyName=k;SharedAccessKey=v",
+        "AZURE_SERVICEBUS_QUEUE_NAME": "pulls",
+    }
+    del values[missing]
+    settings = Settings(QUEUE_BACKEND="azure_service_bus", **values)
+    with pytest.raises(ValueError, match="AZURE_SERVICEBUS_CONNECTION_STRING"):
         make_event_queue(settings)
-    assert "AzureServiceBusEventQueue" in str(
-        exc_info.value
-    ), "Error message must mention AzureServiceBusEventQueue"

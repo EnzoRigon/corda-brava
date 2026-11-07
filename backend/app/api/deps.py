@@ -6,6 +6,7 @@ tests may pre-set ``app.state.container`` or use ``app.dependency_overrides[get_
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -33,6 +34,8 @@ class Container:
     service: MatchService
     # shortcut: per-process batchId->expiry (monotonic); swap for Redis when scaled out
     seen_batches: dict[str, float] = field(default_factory=dict)
+    # enqueues still in flight, by the same key: a resend that arrives meanwhile awaits this
+    inflight_batches: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     # shortcut: per-process failed-login timestamps by client IP; use a shared store when scaled out
     login_failures: dict[str, list[float]] = field(default_factory=dict)
 
