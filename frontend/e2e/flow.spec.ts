@@ -29,8 +29,8 @@ test("host creates, player joins and pulls, match ends, results shown", async ({
   await host.getByRole("button", { name: "Iniciar partida" }).click();
   await expect(host).toHaveURL(/\/host\/match\//);
 
-  // 4. Player taps PUXAR; the knot moves away from 50%.
-  const puxar = player.getByRole("button", { name: "PUXAR" });
+  // 4. Player taps PUXA!; the knot moves away from 50%.
+  const puxar = player.getByRole("button", { name: "PUXA!" });
   await expect(puxar).toBeVisible();
   const knotLeft = () => host.getByTestId("knot").evaluate((el) => parseFloat((el as HTMLElement).style.left));
   await expect(async () => {

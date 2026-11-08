@@ -6,6 +6,7 @@ import { Logo } from "../components/Logo";
 import { PixelButton } from "../components/PixelButton";
 import { PixelPanel } from "../components/PixelPanel";
 import { Crest } from "../components/Crest";
+import { Icon } from "../components/Icon";
 import { useDeviceId } from "../hooks/useDeviceId";
 import { loadSession, saveSession } from "../hooks/useMePolling";
 import type { PublicMatch, TeamId } from "../types/api";
@@ -78,15 +79,10 @@ export default function PlayerJoin() {
   };
 
   return (
-    <main className="player-page">
+    <main className="player-page join-page">
       <Logo scale={2} small />
       <h1 className="pixel-title">Entrar na partida</h1>
-      <PixelPanel className="form-panel">
       <form onSubmit={submit} className="join-form">
-        <label>
-          Seu nome
-          <input value={name} maxLength={24} onChange={(e) => setName(e.target.value)} autoComplete="nickname" />
-        </label>
         <div role="radiogroup" aria-label="Escolha seu time" className="team-picks">
           {TEAMS.map((t) => (
             <button
@@ -94,22 +90,33 @@ export default function PlayerJoin() {
               type="button"
               role="radio"
               aria-checked={team === t}
-              className="team-pick"
-              style={{ borderColor: team === t ? `var(--${t})` : "#2c3778" }}
+              className={`team-pick team-pick-${t}${team === t ? " selected" : ""}`}
               onClick={() => setTeam(t)}
             >
-              <Crest team={t} size={64} />
-              <span>{pub?.teams[t].name ?? (t === "inter" ? "Inter" : "Grêmio")}</span>
-              <small>{pub ? `${pub.counts[t]} jogadores` : ""}</small>
+              <Crest team={t} size={96} />
+              <strong>{pub?.teams[t].name ?? (t === "inter" ? "Inter" : "Grêmio")}</strong>
+              <small>
+                <Icon name="player" size={16} />
+                {pub ? `${pub.counts[t]} jogadores` : "…"}
+              </small>
             </button>
           ))}
         </div>
-        {(error || loadError) && <p role="alert">{error || loadError}</p>}
-        <PixelButton type="submit" disabled={busy}>
+        <PixelPanel className="form-panel">
+          <label>
+            Seu nome
+            <input value={name} maxLength={24} onChange={(e) => setName(e.target.value)} autoComplete="nickname" />
+          </label>
+        </PixelPanel>
+        {(error || loadError) && (
+          <p role="alert" className="px-toast">
+            {error || loadError}
+          </p>
+        )}
+        <PixelButton type="submit" disabled={busy} className="join-go">
           Entrar
         </PixelButton>
       </form>
-      </PixelPanel>
     </main>
   );
 }

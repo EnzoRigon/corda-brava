@@ -1,0 +1,105 @@
+/* ================= Player phone screens (Join / Wait / Play / End) ================= */
+.player-page { max-width: 480px; margin-inline: auto; }
+
+/* ---- Join ---- */
+.join-page { justify-content: flex-start; gap: var(--sp-md); }
+.join-page .pixel-title { font-size: 18px; margin: 0; }
+.join-form { max-width: 100%; }
+.team-picks { gap: var(--sp-md); }
+.team-pick {
+  position: relative; padding: var(--sp-md) var(--sp-sm) var(--sp-lg); gap: var(--sp-sm); min-height: 200px; justify-content: center;
+  background: #0a0c22; border: 0; clip-path: var(--notch); cursor: pointer; touch-action: manipulation;
+  box-shadow: inset 0 0 0 4px #2c3778, inset 0 0 0 8px #0a0c22;
+  filter: saturate(0.75) brightness(0.9); transition: transform 120ms steps(3), filter 120ms steps(3);
+}
+.team-pick strong { font-size: 16px; }
+.team-pick small { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.team-pick-inter { --tc: var(--inter); }
+.team-pick-gremio { --tc: var(--gremio); }
+.team-pick strong { color: var(--tc); text-shadow: 2px 2px 0 var(--ink); }
+.team-pick.selected {
+  filter: none; transform: scale(1.06); z-index: 1;
+  background: color-mix(in srgb, var(--tc) 30%, #0a0c22);
+  box-shadow: inset 0 0 0 4px var(--tc), inset 0 0 0 8px #0a0c22, inset 0 0 24px 8px color-mix(in srgb, var(--tc) 55%, transparent);
+  animation: cb-glow 1.2s steps(2) infinite;
+}
+.team-pick:focus-visible { outline: 4px solid #fff; outline-offset: 2px; }
+.join-page .form-panel { max-width: none; padding: var(--sp-lg) var(--sp-md); }
+.join-form input { font-size: 18px; }
+.join-go { align-self: stretch; font-size: 22px; min-height: 68px; }
+.px-toast {
+  position: fixed; left: 50%; top: calc(var(--sp-md) + var(--safe-top)); transform: translateX(-50%); z-index: var(--z-toast);
+  width: min(92vw, 420px); margin: 0; padding: var(--sp-md); background: #b3000b; color: #fff; font-size: 13px; line-height: 1.5;
+  clip-path: var(--notch); box-shadow: inset 0 0 0 4px #ff6b6b, inset 0 0 0 8px #5a0006;
+  animation: cb-pop-in 0.3s steps(4) both;
+}
+
+/* ---- Wait ---- */
+.wait-page { gap: var(--sp-lg); }
+.wait-hero { display: flex; align-items: flex-end; justify-content: center; gap: var(--sp-sm); filter: drop-shadow(0 8px 0 #141019); }
+.wait-panel { width: 100%; }
+.wait-panel h1 { font-size: 16px; line-height: 1.5; }
+.dots i { font-style: normal; animation: cb-blink 1.2s steps(1) infinite; }
+.dots i:nth-child(2) { animation-delay: 0.2s; }
+.dots i:nth-child(3) { animation-delay: 0.4s; }
+.mates { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; margin: var(--sp-md) 0 0; font-size: 12px; }
+.mates span { flex-basis: 100%; margin-top: var(--sp-sm); color: var(--muted); }
+
+/* ---- Play ---- */
+.player-page.play {
+  --tc: var(--inter);
+  max-width: none; margin: 0; justify-content: flex-start; gap: var(--sp-sm);
+  min-height: 100dvh; padding-bottom: calc(var(--sp-sm) + var(--safe-bottom));
+  background-image: repeating-linear-gradient(90deg, #00000014 0 24px, transparent 24px 48px);
+  background-color: color-mix(in srgb, var(--tc) 55%, #000);
+}
+.player-page.play-gremio { --tc: var(--gremio); }
+.play-crest { margin-top: var(--sp-sm); }
+.tap-count { font-size: 56px; line-height: 1; color: #fff; text-shadow: 4px 4px 0 var(--ink), 8px 8px 0 #00000055; font-variant-numeric: tabular-nums; }
+.combo { width: min(100%, 360px); display: flex; flex-direction: column; gap: 6px; }
+.combo-bar { height: 20px; background: var(--ink); padding: 4px; }
+.combo-bar i { display: block; height: 100%; background: var(--gold); box-shadow: inset 0 -4px 0 #00000040; transition: width 100ms linear; }
+.combo[data-active="true"] .combo-bar { animation: cb-glow 0.5s steps(2) infinite; }
+.combo-label { height: 28px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 18px; color: var(--gold); text-shadow: 2px 2px 0 var(--ink); }
+.pull-wrap { position: relative; width: 100%; margin-top: auto; flex: 0 0 45dvh; display: flex; }
+.pull-button {
+  flex: 1; min-height: 0; font-size: 56px; letter-spacing: 2px; margin-bottom: 12px; text-shadow: 6px 6px 0 var(--ink);
+  box-shadow: inset 12px 12px 0 #ffffff66, inset -12px -12px 0 #00000070, 0 0 0 4px var(--ink), 0 16px 0 4px var(--ink);
+  filter: brightness(1.08);
+}
+.pull-button:active { transform: translateY(12px); box-shadow: inset 12px 12px 0 #ffffff66, inset -12px -12px 0 #00000070, 0 0 0 4px var(--ink), 0 4px 0 4px var(--ink); }
+.plus-one {
+  z-index: 2; font-size: 36px; color: var(--gold); text-shadow: 3px 3px 0 var(--ink); will-change: transform, opacity;
+  animation: plus-one 0.7s steps(8) forwards;
+}
+@keyframes plus-one {
+  from { opacity: 1; transform: translate(-50%, -50%); }
+  to { opacity: 0; transform: translate(-50%, -140px); }
+}
+
+/* ---- End ---- */
+.end-page { gap: var(--sp-lg); }
+.end-page > :not(.confetti):not(.end-dim) { position: relative; z-index: 1; }
+.end-banner {
+  margin: 0; padding: var(--sp-md) var(--sp-lg); font-size: 36px !important; line-height: 1.2; background: #0a0c22e6; clip-path: var(--notch);
+  box-shadow: inset 0 0 0 4px #2c3778, inset 0 0 0 8px #0a0c22; text-shadow: 4px 4px 0 var(--ink);
+}
+.end-banner-inter { color: var(--inter); filter: brightness(1.5); animation: cb-pop-in 0.5s steps(5) both; }
+.end-banner-gremio { color: var(--gremio-light); animation: cb-pop-in 0.5s steps(5) both; }
+.end-banner-plain { color: var(--text); font-size: 28px !important; }
+.end-lose .end-banner-plain { color: var(--muted); }
+.end-pulls { font-size: 16px; color: var(--gold); text-shadow: 2px 2px 0 var(--ink); margin: 0; }
+.end-dim { position: fixed; inset: 0; z-index: 0; background: #000000a6; pointer-events: none; }
+.confetti { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.confetti i {
+  position: absolute; top: 0; width: 16px; height: 16px; image-rendering: pixelated;
+  background-image: url("../assets/ui/fx-confetti-sheet-4x2-4px.png"); background-size: 64px 32px;
+  animation: cb-confetti-fall 4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-pick.selected, .combo[data-active="true"] .combo-bar, .dots i, .end-banner { animation: none; }
+  .plus-one { animation-duration: 0.01s; opacity: 0; }
+  .confetti { display: none; }
+  .team-pick { transition: none; }
+}

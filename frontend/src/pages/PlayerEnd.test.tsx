@@ -8,15 +8,35 @@ vi.mock("../hooks/useMePolling", () => ({
   useMePolling: () => ({ session: { team: "inter" }, me: state.me }),
 }));
 
-const render = () => renderToStaticMarkup(<MemoryRouter><PlayerEnd /></MemoryRouter>);
+const render = (result: string | null) => {
+  state.me = { screen: "end", result };
+  return renderToStaticMarkup(<MemoryRouter><PlayerEnd /></MemoryRouter>);
+};
 
 describe("PlayerEnd", () => {
-  it("titles a cancelled match", () => {
-    state.me = { screen: "end", result: null };
-    expect(render()).toContain("Partida cancelada");
+  it("titles a cancelled match, without a pull count", () => {
+    localStorage.setItem("cb.pulls.", "9");
+    const html = render(null);
+    expect(html).toContain("Partida cancelada");
+    expect(html).not.toContain("Você puxou");
+    expect(html).toContain("Obrigado por jogar!");
   });
-  it("keeps the normal result titles", () => {
-    state.me = { screen: "end", result: "INTER" };
-    expect(render()).toContain("Seu time venceu!");
+  it("win: banner and confetti", () => {
+    const html = render("INTER");
+    expect(html).toContain("VITÓRIA!");
+    expect(html).toContain("confetti");
+  });
+  it("lose: dimmed scene", () => {
+    const html = render("GREMIO");
+    expect(html).toContain("DERROTA…");
+    expect(html).toContain("end-dim");
+    expect(html).not.toContain("confetti");
+  });
+  it("draw", () => {
+    expect(render("DRAW")).toContain("EMPATE!");
+  });
+  it("shows the local pull count", () => {
+    localStorage.setItem("cb.pulls.", "17");
+    expect(render("INTER")).toContain("Você puxou 17 vezes!");
   });
 });
