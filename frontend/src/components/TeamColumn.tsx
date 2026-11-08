@@ -7,9 +7,11 @@ const NAMES: Record<TeamId, string> = { inter: "Inter", gremio: "Grêmio" };
 export default function TeamColumn({ team, players }: { team: TeamId; players: RosterPlayer[] }) {
   return (
     <section className={`team-column ${team}`}>
-      <Crest team={team} size={96} />
-      <h2>{NAMES[team]}</h2>
-      <p className="team-count">{players.length} {players.length === 1 ? "jogador" : "jogadores"}</p>
+      <header className="team-head">
+        <Crest team={team} size={64} />
+        <h2>{NAMES[team]}</h2>
+        <p className="team-count">{players.length} {players.length === 1 ? "jogador" : "jogadores"}</p>
+      </header>
       <div className="team-roster">
         {players.map((p) => <PlayerIcon key={p.id} name={p.name} team={team} />)}
       </div>
