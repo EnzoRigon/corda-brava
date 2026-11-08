@@ -23,6 +23,16 @@ function useSmooth(target: number, enabled: boolean): number {
   return enabled ? v : target;
 }
 
+/** Two dust puffs at the mascot's heels; opacity/scale follow how hard the side is pulling. */
+function Dust({ level, side }: { level: number; side: TeamId }) {
+  const l = Math.min(1, Math.max(0, level));
+  return (
+    <div className={`dust dust-${side}`} aria-hidden style={{ opacity: 0.25 + 0.75 * l, ["--dust-k" as string]: 0.8 + 0.6 * l }}>
+      <i /><i />
+    </div>
+  );
+}
+
 interface Props {
   rope: number;
   target: number;
@@ -35,15 +45,19 @@ export default function RopeScene({ rope, target, delta, mascots, interpolate = 
   const goal = knotLeftPercent(rope, target);
   const left = useSmooth(goal, interpolate);
   const shake = Math.abs(goal - left) > 4; // big swing still in flight
+  const lean: TeamId | null = rope < 0 ? "inter" : rope > 0 ? "gremio" : null;
+  const dust = (t: TeamId) => (delta?.[t] ?? 0) / 30; // ~30 pulls/tick = full cloud
   const push = (t: TeamId) => ((mascots?.[t] ?? "straining") === "straining" ? 1 + Math.min(0.25, (delta?.[t] ?? 0) / 400) : 1);
   return (
     <div className={`rope-scene${shake ? " shake" : ""}`}>
       <div className="scene-mascot" style={{ transform: `scale(${push("inter")})`, transformOrigin: "100% 65%" }}>
         <Mascot team="inter" state={mascots?.inter ?? "straining"} size={160} />
+        <Dust level={dust("inter")} side="inter" />
       </div>
-      <Rope left={left} />
+      <Rope left={left} lean={lean} burst={shake} />
       <div className="scene-mascot" style={{ transform: `scale(${push("gremio")})`, transformOrigin: "0% 65%" }}>
         <Mascot team="gremio" state={mascots?.gremio ?? "straining"} size={160} />
+        <Dust level={dust("gremio")} side="gremio" />
       </div>
     </div>
   );
