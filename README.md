@@ -47,7 +47,7 @@ code, identifiers and comments are English.
 - Live rope scene with an interpolated knot, a server-authoritative timer and chiptune sound effects.
 - Results screen with analytics: timeline, peak moments, best/worst players, team percentages, leaderboard.
 - Batched taps with idempotent retries, a per-player anti-cheat rate cap and flush-on-hide.
-- Broker-shaped event queue, ready to be swapped for Azure Service Bus.
+- Broker-shaped event queue: in memory by default, or Azure Service Bus with one env var (`QUEUE_BACKEND=azure_service_bus`).
 - Single-port Docker deployment (nginx serves the SPA and proxies the API and WebSocket).
 
 ## Architecture
@@ -71,13 +71,12 @@ flowchart LR
 - **Idempotency.** Clients send taps in batches with a `batchId`. The ingest endpoint answers `202` and dedups by
   `batchId`, so a retried batch never counts twice. The queue itself is at-least-once (leased receive, explicit ack,
   redelivery of unacked batches), and the consumer is safe against redelivery.
-- **Azure Service Bus swap.** Add `backend/app/queue/azure_service_bus.py` with an `AzureServiceBusEventQueue`
-  implementing the `EventQueue` Protocol, add one `elif` in `queue/factory.py`, and set
-  `QUEUE_BACKEND=azure_service_bus`. No consumer, service or domain changes are needed. Until the adapter exists,
-  the factory raises `NotImplementedError`.
-- **Scaling limit.** Run one process, one worker. The in-memory queue, match registry and batch dedup are
-  per-process, so multiple workers or replicas would split a match's state. Scaling out needs the Azure queue plus
-  shared state, which is out of scope.
+- **Azure Service Bus.** `AzureServiceBusEventQueue` (`backend/app/queue/azure_service_bus.py`) implements the same
+  `EventQueue` Protocol, so the consumer, services and domain are untouched; `QUEUE_BACKEND=azure_service_bus`
+  selects it. See [Azure Service Bus](#azure-service-bus) below.
+- **Scaling limit.** Run one process, one worker. The match registry and batch dedup are per-process (and so is the
+  in-memory queue), so multiple workers or replicas would split a match's state. Scaling out needs shared state on
+  top of the Azure queue, which is out of scope.
 
 Design rationale: [`docs/superpowers/specs/2026-11-03-corda-brava-design.md`](./docs/superpowers/specs/2026-11-03-corda-brava-design.md).
 
@@ -100,7 +99,7 @@ corda-brava/
 │   │   ├── api/               # player, host, auth, WebSocket routes
 │   │   ├── core/              # settings, app factory, logging
 │   │   ├── domain/            # entities, enums, pure game rules
-│   │   ├── queue/             # EventQueue Protocol, in-memory impl, factory
+│   │   ├── queue/             # EventQueue Protocol, in-memory and Azure Service Bus impls, factory
 │   │   ├── repositories/      # interfaces + SQLite implementations
 │   │   ├── schemas/           # request/response models
 │   │   └── services/          # match service, consumer loop, registry, analytics, sessions
@@ -161,9 +160,79 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # ne
 Phones cannot open `localhost`. Set `PUBLIC_BASE_URL` and `VITE_PUBLIC_BASE` in `.env` to `http://<LAN-IP>`
 (append `:PORT` if `PUBLIC_PORT` is not 80) before building, so the QR code points at an address phones can reach.
 
+## Azure Service Bus
+
+By default the pulls travel through an in-memory queue. To send them through Azure Service Bus instead:
+
+1. **Namespace.** Create a Service Bus namespace (tested on Standard). In the portal open it, then *Settings,
+   Shared access policies, RootManageSharedAccessKey* and copy the **Primary connection string** (namespace-level,
+   without `EntityPath`).
+2. **Configure** the repo-root `.env`, which Docker Compose reads (a local `uvicorn` reads `backend/.env` instead;
+   see [Configuration](#configuration)):
+
+   ```bash
+   QUEUE_BACKEND=azure_service_bus
+   AZURE_SERVICEBUS_CONNECTION_STRING="Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<key>"
+   AZURE_SERVICEBUS_QUEUE_NAME=corda-brava-pulls
+   ```
+
+3. **Create the queue once** (idempotent; needs Manage rights, the running app only needs Send + Listen):
+
+   ```bash
+   cd backend && python -m app.queue.provision
+   ```
+
+   It creates the queue with a lock of `QUEUE_LEASE_TIMEOUT_S` (10 s by default, the same lease as the in-memory
+   queue), max delivery count 10, a 1 h message TTL and 10 min duplicate detection. Run it again on an existing queue
+   and it checks it: lock, max delivery count, TTL and duplicate-detection window are updated in place, while a queue
+   without duplicate detection or with sessions is reported as an error, because those cannot be changed after
+   creation (delete the queue and run it again). The same settings work from the portal or `az servicebus queue create`.
+4. **Run the app as usual.** On startup the log shows `Azure Service Bus queue 'corda-brava-pulls' ready on <namespace>`;
+   a wrong key, a missing queue or an unreachable network stops the app right there (after the SDK's
+   retries, up to ~15 s) instead of on the first pull.
+
+How the `EventQueue` contract maps onto the broker:
+
+| `EventQueue` | Azure Service Bus |
+|---|---|
+| `enqueue` | one task owns the sender and group-commits whatever piled up as a `ServiceBusMessageBatch`; `message_id` is `<matchId>:<batchId>` |
+| `receive_batch` | `receive_messages` in PEEK_LOCK with `prefetch_count=0`; callers that poll while a receive is in flight join it, then take up to `max_messages` from a local pool of locked messages |
+| `ack` | `complete_message`, settled in parallel |
+| `abandon` | the message, still locked, goes back to the local pool for the next `receive_batch`; the broker is not told, so the delivery count does not grow (`abandon_message` would count as a delivery attempt) |
+| lease timeout | the queue's `LockDuration`, set by `provision` from `QUEUE_LEASE_TIMEOUT_S`; a pooled message whose lock is about to run out is left to the broker, which redelivers it |
+| redelivery | the broker re-queues an unsettled message when its lock expires; `delivery_count` is the broker's count plus one |
+| unparseable message | dead-lettered with reason `invalid-payload` (browse `corda-brava-pulls/$deadletterqueue` in Service Bus Explorer) |
+
+Things worth knowing (measured on a Standard namespace, about 54 ms from the dev machine):
+
+- **The SDK is picky about concurrency.** 50 concurrent sends on one sender made 49 fail, two concurrent receives on one
+  receiver interfere, and each `complete` waits for the broker (50 sequential completes took 7.4 s, 100 in parallel
+  0.26 s). That is why sends are group-committed, why match loops that poll at the same time share one receive
+  instead of queueing one each, and why settles run in parallel (never during a receive: the SDK receiver is not
+  coroutine-safe).
+- **Ticks arrive about every 0.7 s instead of 0.5 s.** `receive_messages` takes at least ~0.2 s even on an empty queue,
+  and the consumer sleeps `TICK_INTERVAL_MS` between polls. The host screen interpolates, so it is barely visible.
+- **A failed send is a `503`.** The pull route only remembers a `batchId` after the broker accepted it, and the client
+  already resends 5xx batches with the same `batchId`, so an outage loses no pulls. A resend that arrives while the
+  first send is still in flight waits for that send and gets its answer; it is not sent again.
+- **Duplicates are absorbed three times**: the route's `batchId` memory, the broker's duplicate detection and the
+  consumer's `batchId` check (a crash between apply and ack redelivers the message, which is then acked without effect).
+- **Simultaneous matches share the queue.** Each match loop hands back the pulls of the other running matches with
+  `abandon`, which stays inside the process (see the table), so those pulls are neither delayed by a lock nor
+  dead-lettered. The pool is per process, which fits the single-worker backend.
+- **One backend per queue.** A second backend on the same queue (for example a local `uvicorn` next to the Docker
+  stack) takes messages for matches it does not know and drops them. Give it its own queue or the memory backend.
+- **Network.** The SDK speaks AMQP over TLS (outbound TCP 5671). Networks that block it, such as some campus Wi-Fi,
+  cannot reach the queue; AMQP over WebSockets (port 443) is not wired up.
+- **Cost.** A Standard namespace bills a base fee while it exists; delete it when you are done.
+
 ## Configuration
 
-Set in `.env` (see `.env.example`); defaults live in `backend/app/core/settings.py`.
+Set in `.env` (see `.env.example`); defaults live in `backend/app/core/settings.py`. Docker Compose reads the
+repo-root `.env`. A local `uvicorn` reads only `backend/.env` (plus real environment variables) from wherever it is
+started, so it never picks up the Docker values (LAN `PUBLIC_BASE_URL` on port 80, the shared Azure queue, the stack's
+secrets). `python -m app.queue.provision` and the opt-in Azure tests read both files (`backend/.env` wins), because
+the connection string usually lives in the root one.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -180,14 +249,27 @@ Set in `.env` (see `.env.example`); defaults live in `backend/app/core/settings.
 | `LATE_JOIN_POLICY` | `block` | `block` or `spectator` |
 | `TEAM_BALANCE_MODE` | `normalized` | `normalized` or `raw` scoring |
 | `QUEUE_BACKEND` | `memory` | `memory` or `azure_service_bus` |
+| `QUEUE_LEASE_TIMEOUT_S` | `10` | Lease of a received message: the in-memory timeout and the Service Bus queue's lock (5-300 s; re-run `provision` after changing it) |
+| `AZURE_SERVICEBUS_CONNECTION_STRING` | unset | Namespace-level connection string; required for `azure_service_bus` |
+| `AZURE_SERVICEBUS_QUEUE_NAME` | unset | Queue name (create it with `python -m app.queue.provision`); required for `azure_service_bus` |
 
 ## Testing
 
 ```bash
-cd backend && python -m pytest        # 154 tests
+cd backend && python -m pytest        # 205 tests (+6 opt-in against a real Azure namespace)
 cd frontend && npm test -- --run      # 57 tests (Vitest)
 cd frontend && npx playwright install chromium && npm run e2e
 ```
+
+The Azure tests are skipped unless asked for. They create and delete their own temporary queues (`cb-test-*`) in the
+namespace from the root `.env` (or `backend/.env`), never the app's queue:
+
+```bash
+cd backend && AZURE_TESTS=1 python -m pytest tests/queue/test_azure_service_bus_integration.py -v
+```
+
+The adapter is otherwise tested against an in-process fake broker that reproduces the SDK behaviours above, and the
+unchanged `ConsumerLoop` is run on top of it (`tests/queue/test_azure_consumer_swap.py`). Tests never read a `.env`.
 
 The Playwright e2e drives a host and a player in separate browser contexts (login, create, join, start, pull,
 results) against a running stack; set `E2E_BASE_URL=http://localhost` to target the Docker stack.
@@ -215,5 +297,6 @@ Built task by task with subagent-driven development: each of the 18 plan tasks w
 [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md).
 
 **Status:** all 18 plan tasks are done; the visual polish phase (pixel design system, animated stadium scene,
-chiptune SFX) is still in progress. The Docker setup has not been run yet, because Docker was unavailable in the
-build environment; local dev and the Playwright e2e were verified against the Vite stack.
+chiptune SFX) is still in progress. Local dev and the Playwright e2e were verified against the Vite stack; the Docker
+setup was run on macOS (Apple Silicon) with `QUEUE_BACKEND=azure_service_bus`: build, healthcheck and a full match
+through nginx, WebSocket proxy included. Docker with the default in-memory queue has not been run.

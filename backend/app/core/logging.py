@@ -46,3 +46,4 @@ def configure_logging(level: int = logging.INFO, *, structured: bool = False) ->
 
     # Quieten noisy third-party loggers.
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("azure").setLevel(logging.WARNING)  # AMQP link state changes at INFO

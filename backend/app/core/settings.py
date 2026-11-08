@@ -9,9 +9,19 @@ from __future__ import annotations
 
 import secrets
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+# The app reads only ``backend/.env`` (anchored here, not to the cwd).  The repo-root ``.env``
+# belongs to Docker Compose (LAN PUBLIC_BASE_URL on port 80, the Azure queue, the stack's
+# secrets): a dev server that read it would hand phones the Docker URL and compete with the
+# running stack for the same queue.  Ops tools that need its Azure credentials opt in with
+# ``settings_with_root_env()``.
+BACKEND_ENV_FILE = _BACKEND_DIR / ".env"
+ROOT_ENV_FILE = _BACKEND_DIR.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -22,7 +32,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=BACKEND_ENV_FILE,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -61,11 +71,22 @@ class Settings(BaseSettings):
 
     # ── Queue backend ─────────────────────────────────────────────────────────
     QUEUE_BACKEND: Literal["memory", "azure_service_bus"] = "memory"
+    # Lease for both backends: the in-memory queue's timeout, and the Service Bus queue's
+    # LockDuration (``python -m app.queue.provision`` writes it; Service Bus allows 5-300 s).
     QUEUE_LEASE_TIMEOUT_S: int = 10
 
     # ── Azure Service Bus (read only when QUEUE_BACKEND=azure_service_bus) ─────
     AZURE_SERVICEBUS_CONNECTION_STRING: str | None = None
     AZURE_SERVICEBUS_QUEUE_NAME: str | None = None
+
+
+def settings_with_root_env() -> Settings:
+    """Settings for ops tools (queue provisioning, the opt-in Azure tests).
+
+    Also reads the repo-root ``.env`` that Docker Compose uses, where the Azure connection
+    string lives; ``backend/.env`` and real environment variables still win.
+    """
+    return Settings(_env_file=(ROOT_ENV_FILE, BACKEND_ENV_FILE))
 
 
 @lru_cache(maxsize=1)

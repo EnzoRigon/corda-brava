@@ -10,7 +10,7 @@ changes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.domain.entities import PullEvent
 
@@ -26,11 +26,16 @@ class QueueMessage:
     delivery_count  Number of times this message has been delivered.
                     Starts at 1; increments on every redelivery (lease expiry
                     or ``abandon``).
+    raw             Opaque broker handle (e.g. the SDK message that carries the
+                    lock) which ``ack`` / ``abandon`` need.  ``None`` for the
+                    in-memory queue.  Only the queue that produced it may look
+                    inside; services and domain code must ignore it.
     """
 
     id: str
     payload: PullEvent
     delivery_count: int = field(default=1)
+    raw: Any = field(default=None, repr=False, compare=False)
 
 
 class EventQueue(Protocol):
