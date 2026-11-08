@@ -257,7 +257,7 @@ the connection string usually lives in the root one.
 
 ```bash
 cd backend && python -m pytest        # 205 tests (+6 opt-in against a real Azure namespace)
-cd frontend && npm test -- --run      # 57 tests (Vitest)
+cd frontend && npm test -- --run      # 80 tests (Vitest)
 cd frontend && npx playwright install chromium && npm run e2e
 ```
 
@@ -296,7 +296,7 @@ Built task by task with subagent-driven development: each of the 18 plan tasks w
 [plan](./docs/superpowers/plans/2026-11-03-corda-brava.md) and the
 [progress ledger](./docs/superpowers/sdd/2026-11-03-corda-brava/progress.md).
 
-**Status:** all 18 plan tasks are done; the visual polish phase (pixel design system, animated stadium scene,
-chiptune SFX) is still in progress. Local dev and the Playwright e2e were verified against the Vite stack; the Docker
+**Status:** all 18 plan tasks and the visual polish phase are done: pixel design system, animated stadium
+scene, chiptune SFX, title/lobby/match/results screens and the phone screens. Local dev and the Playwright e2e were verified against the Vite stack; the Docker
 setup was run on macOS (Apple Silicon) with `QUEUE_BACKEND=azure_service_bus`: build, healthcheck and a full match
 through nginx, WebSocket proxy included. Docker with the default in-memory queue has not been run.

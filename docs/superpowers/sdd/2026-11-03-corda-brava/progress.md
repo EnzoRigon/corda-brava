@@ -267,3 +267,8 @@ P4: implemented (commit ce83ceb; report bcd77c2; vitest 75, tsc/lint/build, play
 P4: complete.
 
 ## PAUSED AGAIN (owner request) — RESUME HERE: next is P7 (results screen: FIM DE JOGO / INTER VENCEU! / EMPATE!, confetti, podium with winner happy + loser crying, MVP crowns, pixel stat cards + chart, JOGAR DE NOVO?). Then refresh README counts/GIF and push.
+
+P7: implemented (commit c3bc36c; report 716e4ee; vitest 80, tsc/lint/build; playwright green on rerun, controller re-ran: 1 passed). Results: FIM DE JOGO + result line in winner color (or EMPATE!/PARTIDA CANCELADA) + reason; podium (winner happy + crown on tall block, loser crying, draw idle equal); confetti in winner colors (none when cancelled); stat tiles + per-team cards with MVP crown; retro Ranking top 5; step-line PullsTimeline; PlayAgain SIM/NÃO with arrow keys + blinking cursor; staggered entrance.
+P7: complete.
+
+## POLISH PHASE COMPLETE (P1–P7 + rope fix). Backend 205 + 6 skipped; frontend 80; E2E green. README GIF re-recorded (match screen with HUD + feed); GIF script pulls smaller counts so the match lasts the clip.

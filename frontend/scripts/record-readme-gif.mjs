@@ -47,7 +47,7 @@ try {
       const phase = Math.sin(((Date.now() - t0) / 1000) * 0.8);
       for (const p of players) {
         const mine = p.team === "inter" ? -phase : phase;
-        const count = Math.max(1, Math.round(11 + mine * 10 + Math.random() * 3));
+        const count = Math.max(1, Math.round(3 + mine * 2.5 + Math.random() * 2)); // small swings so the match lasts the whole clip
         post(`/api/matches/${matchId}/pulls`, {
           playerId: p.playerId, playerToken: p.playerToken, count,
           clientTs: Date.now() / 1000, batchId: `${p.playerId}-${n++}`,
