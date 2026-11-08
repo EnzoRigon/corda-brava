@@ -258,3 +258,7 @@ A `/code-review` of the uncommitted adapter found 8 issues; all fixed in the sam
 
 P5: implemented (commit aac6516; report f3292af; vitest 72, tsc/lint/build, playwright 1). Player screens: Join (team cards w/ crest+count, selected glow, red pixel toast), Wait (crest bob + idle mascot, "Aguardando o host iniciar…", teammate count via /public), Play (darkened team screen, crest 160px pulse, tap counter, combo meter lib/combo.ts, PUXA! lower 45% with 12px press, +1 at touch point, tap sfx + vibrate(8)), End (VITÓRIA! w/ confetti / DERROTA… dimmed / EMPATE! / Partida cancelada; mascot happy/crying/idle; "Você puxou N vezes!" from localStorage cb.pulls.<matchId>). Styles theme/player.css. E2E selector PUXAR -> PUXA!. Controller acceptance (implementer screenshot/rect-verified at 390x844).
 P5: complete.
+
+P6: implemented (commit 3639786; report 2bcce34; vitest 71, tsc/lint/build, playwright 1). Match screen: HUD panel (crests, scores, gold timer, red/blue power bar), EventFeed (2 columns, last 6 per team from tick.events, 400 ms merge), dust puffs at feet by delta, knot sparkle on big swings + pennant toward leading side, JÁ! + whistle, VIRADA! + swing on lead change (5% dead-band), last 10 s red pulse + vignette + heartbeat + countdown 3-2-1, Cancelar with confirm. lib/matchFx.ts (+tests). Rope alignment re-measured (edges match).
+Ruling: winning/losing mascot states NOT used in the rope scene — happy/defeat sprites do not hold the rope, which breaks alignment; both sides stay straining.
+P6: complete. Not seen on screen: VIRADA! (unit-tested only).
