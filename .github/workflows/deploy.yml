@@ -1,0 +1,52 @@
+name: Deploy Trigger
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-main:
+    name: Trigger deploy for main
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Show context
+        run: |
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Repo:   ${{ github.repository }}"
+      - name: Trigger VPS deploy (EasyPanel compose)
+        env:
+          # The URL embeds the EasyPanel deploy token, so it lives in a repo secret, not in this file.
+          DEPLOY_URL: ${{ secrets.EASYPANEL_DEPLOY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "EASYPANEL_DEPLOY_URL secret is not set." >&2
+            exit 1
+          fi
+          payload=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg commit "${{ github.sha }}" \
+            '{repository: $repo, branch: $branch, commit: $commit}')
+          for i in 1 2 3; do
+            if curl -sS --fail -X POST \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              --max-time 20 \
+              -d "$payload" \
+              "$DEPLOY_URL"; then
+              echo "Deploy trigger succeeded."
+              exit 0
+            fi
+            echo "Deploy trigger failed (attempt $i), retrying..."
+            sleep 3
+          done
+          echo "Deploy trigger failed after 3 attempts." >&2
+          exit 1
