@@ -4,12 +4,20 @@ import { getAnalytics, resetMatch } from "../api/hostApi";
 import { ApiError } from "../api/client";
 import AnalyticsGrid from "../components/AnalyticsGrid";
 import { Mascot, type MascotState } from "../components/Mascot";
+import { Confetti } from "../components/Confetti";
+import { Crest } from "../components/Crest";
+import { Icon } from "../components/Icon";
+import { PlayAgain } from "../components/PlayAgain";
 import ResultBanner from "../components/ResultBanner";
 import type { AnalyticsPayload, TeamId } from "../types/api";
-import { PixelButton } from "../components/PixelButton";
 import { PixelPanel } from "../components/PixelPanel";
+import "../theme/results.css";
 import { play } from "../lib/sfx";
 import { getHostToken } from "./HostLogin";
+
+const NAME: Record<TeamId, string> = { inter: "Inter", gremio: "Grêmio" };
+const TEAMS: TeamId[] = ["inter", "gremio"];
+const TEAM_COLOR: Record<TeamId, string> = { inter: "#e5050f", gremio: "#4fa9dc" };
 
 const endStates = (r: AnalyticsPayload["result"]): Record<TeamId, MascotState> =>
   // DRAW: no "exhausted" sprite exists, so both idle.
@@ -50,17 +58,26 @@ export default function HostResults() {
 
   if (!a) return <main className="host-page"><p role={err ? "alert" : undefined}>{err || "Carregando…"}</p></main>;
   const st = endStates(a.result);
+  const win = a.result === "INTER" || a.result === "GREMIO" ? (a.result.toLowerCase() as TeamId) : null;
+  const confettiColors = win ? [TEAM_COLOR[win], "#f4f4f4", "#ffe27a"] : a.result === "DRAW" ? ["#ffe27a", "#f4f4f4"] : null;
   return (
     <main className="host-page results">
-      <ResultBanner result={a.result} endReason={a.endReason} />
-      <div className="results-mascots">
-        <Mascot team="inter" state={st.inter} size={200} />
-        <Mascot team="gremio" state={st.gremio} size={200} />
+      {confettiColors && <Confetti count={36} colors={confettiColors} />}
+      <div className="rs-stage rs-s1"><ResultBanner result={a.result} endReason={a.endReason} /></div>
+      <div className="rs-stage rs-s2 results-mascots">
+        {TEAMS.map((t) => (
+          <div key={t} className={`pod-col ${t} ${win ? (win === t ? "first" : "second") : "even"}`}>
+            {win === t && <Icon name="crown" size={64} className="pod-crown anim-bob" />}
+            <Mascot team={t} state={st[t]} size={192} className="pod-mascot" />
+            <div className="pod-block">
+              <strong>{NAME[t]}</strong>
+              <Crest team={t} size={48} />
+            </div>
+          </div>
+        ))}
       </div>
-      <PixelPanel className="analytics-panel">
-        <AnalyticsGrid a={a} />
-      </PixelPanel>
-      <PixelButton className="start-btn" onClick={again}>Nova Partida</PixelButton>
+      <div className="rs-stage rs-s3"><AnalyticsGrid a={a} /></div>
+      <PixelPanel className="rs-stage rs-s3 again-panel"><PlayAgain onYes={again} onNo={() => nav("/host/create")} /></PixelPanel>
     </main>
   );
 }

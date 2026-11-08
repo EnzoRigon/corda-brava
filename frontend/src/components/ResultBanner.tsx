@@ -1,19 +1,22 @@
 import type { EndReason, MatchResult } from "../types/api";
 
-const NAME = { INTER: "Inter", GREMIO: "Grêmio" } as const;
+const LINE = { INTER: "INTER VENCEU!", GREMIO: "GRÊMIO VENCEU!", DRAW: "EMPATE!" } as const;
+
+export const resultLine = (r: MatchResult | null) => (r ? LINE[r] : "PARTIDA CANCELADA");
 
 export default function ResultBanner({ result, endReason }: { result: MatchResult | null; endReason: EndReason | null }) {
   if (!result)
     return (
-      <header className="result-banner">
-        <h1>Partida cancelada</h1>
+      <header className="result-banner cancelled">
+        <h1 className="rs-title pixel-title">FIM DE JOGO</h1>
+        <p className="rs-line">{resultLine(null)}</p>
       </header>
     );
-  const win = result === "INTER" || result === "GREMIO";
   return (
     <header className={`result-banner ${result.toLowerCase()}`}>
-      <h1>{win ? `${NAME[result]} venceu a Corda Brava!` : "Empate! Ninguém levou a corda."}</h1>
-      <p>{endReason === "win" ? "A corda foi arrastada até o fim!" : "O tempo acabou."}</p>
+      <h1 className="rs-title pixel-title">FIM DE JOGO</h1>
+      <p className="rs-line">{resultLine(result)}</p>
+      <p className="rs-reason">{endReason === "win" ? "Corda puxada até o fim!" : "O tempo acabou!"}</p>
     </header>
   );
 }
